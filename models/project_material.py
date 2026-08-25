@@ -21,6 +21,11 @@ class ProjectMaterial(Document):
     # 기존 자료(이 필드가 생기기 전에 만든 것)는 None일 수 있다.
     sourceChannel: SourceChannel | None = None
     sourceMessageId: PydanticObjectId | None = None
+    # 어느 대화에서 온 파일인지. SourceMessage가 없어도(대화 흐름을 거치지 않고
+    # 발견됐어도) 화면에 "누가·무슨 제목으로 보냈는지"를 보여줄 수 있어야 해서
+    # 만들 때 값을 그대로 복사해 둔다.
+    conversationTitle: str | None = None
+    senderDisplay: str | None = None
     connectionId: str | None = None
     providerFileId: str | None = None
     fileName: str = Field(min_length=1, max_length=255)

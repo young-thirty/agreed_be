@@ -11,9 +11,18 @@ class EmailAddress(BaseModel):
 
 
 class EmailAttachment(BaseModel):
-    """첨부 메타데이터만 담는다. 본문 바이트는 필요할 때(동기화 시점)만 따로 내려받는다."""
+    """첨부 메타데이터만 담는다. 본문 바이트는 필요할 때(동기화 시점)만 따로 내려받는다.
+
+    id와 attachmentId는 다른 값이다. id는 메시지 안에서 이 파트의 위치를
+    가리키는 값(Gmail partId)이라 메시지가 바뀌지 않는 한 안 바뀐다 — 자료
+    아카이브가 "같은 첨부"를 다시 만나지 않게 식별할 때 이 값을 쓴다.
+    attachmentId는 messages.attachments.get을 부를 때만 쓰는 일회성 토큰이라,
+    메시지를 다시 조회할 때마다 값이 달라진다. 오래 들고 있다가 나중에
+    쓰면 안 되고, 받은 그 자리에서만 쓴다.
+    """
 
     id: str
+    attachmentId: str
     filename: str
     mimeType: str
     sizeBytes: int

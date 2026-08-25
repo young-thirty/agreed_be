@@ -54,6 +54,16 @@ def public_project(project: Project, unanswered_request_count: int = 0) -> dict[
 
 
 def public_material(material: ProjectMaterial) -> dict[str, object]:
+    # S3에 이미 올려둔 원본이 있으면 그걸 쓰고, Gmail 첨부는 없어도 그 자리에서
+    # 다시 받아올 수 있다(GET .../materials/{id}/file이 두 경로를 다 안다).
+    # 그래서 storageKey 유무만으로 '읽을 수 있는지'를 판단하면 Gmail 자료를
+    # 실제로는 되는데도 안 되는 것처럼 흐리게 보여주게 된다.
+    can_fetch_live = (
+        material.sourceChannel == "GMAIL"
+        and material.connectionId is not None
+        and material.providerFileId is not None
+        and ":" in material.providerFileId
+    )
     return {
         "materialId": str(material.id),
         "projectId": str(material.projectId),
@@ -65,6 +75,7 @@ def public_material(material: ProjectMaterial) -> dict[str, object]:
         "sourceChannel": material.sourceChannel,
         "mimeType": material.mimeType,
         "sizeBytes": material.sizeBytes,
-        # 원본이 S3에 있어야 다운로드할 수 있다. 화면이 이 값으로 링크를 보여줄지 정한다.
-        "hasFile": material.storageKey is not None,
+        "conversationTitle": material.conversationTitle,
+        "senderDisplay": material.senderDisplay,
+        "hasFile": material.storageKey is not None or can_fetch_live,
     }

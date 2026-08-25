@@ -24,6 +24,7 @@ from app.integration_store import (
 from app.public_data import public_material, public_project
 from app.requirement_sync import sync_requirements_from_requests
 from app.response import fail, ok
+from core.channel_data import RawEmail
 from core.contract_ops import apply_to_contract, diff_contract
 from core.domain import ContractState
 from core.project_data import (
@@ -32,7 +33,7 @@ from core.project_data import (
 )
 from infra.integrations import IntegrationError
 from infra.integrations.gmail import (
-    GMAIL_SCOPES, fetch_attachment, fetch_recent, refresh_access_token,
+    GMAIL_SCOPES, fetch_attachment, fetch_message_attachment, fetch_recent, refresh_access_token,
 )
 from infra.integrations.slack import fetch_file, fetch_history
 from infra.llm.client import EXTRACT_MODEL
@@ -124,6 +125,16 @@ class GitAskRequest(BaseModel):
 
 class ContractApplyRequest(BaseModel):
     requirementId: PydanticObjectId
+
+
+class MaterialDiscoveryRequest(BaseModel):
+    """화면이 이미 받아온 메일 목록에서 첨부만 자료로 등록한다.
+
+    Gmail을 다시 부르지 않는다. 요구사항 추출·고객 이메일 탭이 이미
+    /api/email/messages로 받아 둔 결과를 그대로 보낸다.
+    """
+
+    emails: list[RawEmail] = Field(max_length=200)
 
 
 async def get_owned_project(project_id: PydanticObjectId, user: User | None) -> Project | None:
@@ -354,15 +365,75 @@ async def project_materials(project_id: PydanticObjectId, current_user: User | N
     return ok([public_material(item) for item in materials])
 
 
+@router.post("/projects/{project_id}/materials/discover")
+async def discover_materials(
+    project_id: PydanticObjectId, body: MaterialDiscoveryRequest,
+    background_tasks: BackgroundTasks,
+    current_user: User | None = Depends(get_current_user),
+):
+    """메일 목록에서 첨부를 찾아 자료로 등록한다.
+
+    요구사항 추출·고객 이메일 탭이 화면에 메일을 띄울 때마다 함께 부른다.
+    소스링크를 만들고 동기화하는 절차 없이도 아카이브가 채워진다.
+    """
+    project, error = await _project_or_404(project_id, current_user)
+    if error:
+        return error
+    connection = await latest_gmail_connection(str(current_user.id))
+    if connection is None:
+        return fail("Gmail이 연결되어 있지 않습니다.", 404)
+
+    discovered = 0
+    for email in body.emails:
+        if not email.attachments:
+            continue
+        direction = "SENT" if email.from_.address.lower() == connection.externalId.lower() else "RECEIVED"
+        sender_display = email.from_.name or email.from_.address
+        for attachment in email.attachments:
+            provider_file_id = f"{email.id}:{attachment.id}"
+            material = ProjectMaterial(
+                ownerId=current_user.id, projectId=project.id,
+                sourceChannel="GMAIL", connectionId=connection.externalId,
+                providerFileId=provider_file_id,
+                conversationTitle=email.subject, senderDisplay=sender_display,
+                fileName=attachment.filename, mimeType=attachment.mimeType,
+                sizeBytes=attachment.sizeBytes, direction=direction,
+                communicatedAt=_utc_datetime(email.sentAt),
+                contentHash=_hash(provider_file_id), classificationStatus="PENDING",
+            )
+            try:
+                await material.insert()
+            except DuplicateKeyError:
+                # 이미 있는 자료다. 동기화(sync_source_link)로 먼저 만들어졌으면
+                # 대화 제목이 비어 있을 수 있으니 그때만 채워 준다.
+                existing = await ProjectMaterial.find_one(
+                    ProjectMaterial.ownerId == current_user.id,
+                    ProjectMaterial.connectionId == connection.externalId,
+                    ProjectMaterial.providerFileId == provider_file_id,
+                )
+                if existing is not None and existing.conversationTitle is None:
+                    existing.conversationTitle = email.subject
+                    existing.senderDisplay = sender_display
+                    existing.updatedAt = _now()
+                    await existing.save()
+                continue
+            discovered += 1
+            material_run = await _ensure_material_run(material)
+            background_tasks.add_task(classify_material_run, str(material_run.id))
+    return ok({"discoveredCount": discovered})
+
+
 @router.get("/projects/{project_id}/materials/{material_id}/file")
 async def download_material_file(
     project_id: PydanticObjectId, material_id: PydanticObjectId,
     current_user: User | None = Depends(get_current_user),
 ):
-    """자료 원본을 그대로 내려준다. 채널과 상관없이 S3(storageKey)에서만 읽는다.
+    """자료 원본을 그대로 내려준다.
 
-    Gmail·Slack이 각자 다른 다운로드 방식을 갖고 있지만, 동기화 시점에 한 번
-    S3로 옮겨 두면 화면은 채널을 몰라도 된다.
+    S3에 이미 올려둔 원본이 있으면 그걸 쓴다. 없어도 Gmail 자료라면 그
+    자리에서 다시 받아온다 — 아카이브 등록(discover) 시점에는 목록만 만들고
+    원본을 미리 내려받지 않으므로, 실제로 열어볼 때 이 경로를 탄다. 처음
+    받아오는 김에 S3가 있으면 캐시해 둬서 다음부터는 바로 나가게 한다.
     """
     project, error = await _project_or_404(project_id, current_user)
     if error:
@@ -373,17 +444,22 @@ async def download_material_file(
     )
     if material is None:
         return fail("해당 자료를 찾을 수 없습니다.", 404)
-    if material.storageKey is None:
-        return fail("원본 파일이 아직 없습니다. 파일이 크거나 저장에 실패했을 수 있습니다.", 404)
-    content = get_object(material.storageKey)
+
+    content = get_object(material.storageKey) if material.storageKey else None
     if content is None:
-        return fail("원본 파일을 가져오지 못했습니다.", 502)
+        content = await _fetch_material_live(material, current_user)
+        if content is None:
+            return fail("원본 파일이 아직 없습니다. 파일이 크거나 저장에 실패했을 수 있습니다.", 404)
+
     encoded_name = quote(material.fileName)
+    # PDF는 브라우저가 바로 읽을 수 있어 새 탭으로 열면 그대로 보인다.
+    # 그 외에는 화면이 fetch로 받아 직접 다루거나(예: docx 변환), 다운로드로 받는다.
+    disposition = "inline" if material.mimeType == "application/pdf" else "attachment"
     return Response(
         content=content,
         media_type=material.mimeType or "application/octet-stream",
         headers={
-            "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_name}",
+            "Content-Disposition": f"{disposition}; filename*=UTF-8''{encoded_name}",
             "Cache-Control": "private, no-store",
         },
     )
@@ -721,20 +797,21 @@ MAX_GMAIL_ATTACHMENT_BYTES = 10 * 1024 * 1024
 
 
 async def _store_gmail_attachment_original(
-    material: ProjectMaterial, access_token_value: str, message_id: str,
+    material: ProjectMaterial, access_token_value: str, message_id: str, attachment_id: str,
 ) -> None:
     """Gmail 첨부 원본을 한 번만 내려받아 S3에 올린다.
 
+    attachment_id는 반드시 방금 목록 조회에서 받은 값이어야 한다. Gmail의
+    attachmentId는 messages.get을 부를 때마다 새로 발급되는 일회성 토큰이라,
+    material.providerFileId(파트 위치를 가리키는 안정적인 값)에서 되짚어 낼
+    수 없다 — 저장해 뒀다가 나중에 쓰면 이미 무효한 값이다.
+
     _store_material_original(Slack)과 같은 이유로 예외를 위로 던지지 않는다.
     """
-    if material.providerFileId is None or material.sizeBytes is None:
+    if material.sizeBytes is None:
         return
     if material.sizeBytes > MAX_GMAIL_ATTACHMENT_BYTES:
         return
-    # providerFileId는 "{메시지id}:{첨부id}" 형태다. Gmail attachmentId는
-    # 메시지 안에서만 유일해서, 커넥션 전체에서 유일해야 하는 unique index
-    # 조건을 맞추려고 메시지id를 붙였다.
-    attachment_id = material.providerFileId.split(":", 1)[-1]
     try:
         downloaded = await fetch_attachment(
             access_token=access_token_value, message_id=message_id, attachment_id=attachment_id,
@@ -749,6 +826,47 @@ async def _store_gmail_attachment_original(
     material.storageKey = stored_key
     material.updatedAt = _now()
     await material.save()
+
+
+async def _fetch_material_live(material: ProjectMaterial, owner: User) -> bytes | None:
+    """S3에 원본이 없는 Gmail 자료를 그 자리에서 받아온다. 화면이 눌렀을 때만 부른다.
+
+    discover 단계는 목록만 만들고 원본을 미리 내려받지 않으므로, 실제로
+    열어보는 이 시점이 첫 다운로드다. 성공하면 다음부터는 S3에서 바로
+    나가도록 캐시해 둔다.
+    """
+    if (
+        material.sourceChannel != "GMAIL"
+        or material.connectionId is None
+        or material.providerFileId is None
+        or ":" not in material.providerFileId
+    ):
+        return None
+    if material.sizeBytes is not None and material.sizeBytes > MAX_GMAIL_ATTACHMENT_BYTES:
+        return None
+    connection = await latest_gmail_connection(str(owner.id))
+    if connection is None:
+        return None
+    try:
+        connection, token = await _gmail_connection_token(connection)
+        message_id, part_id = material.providerFileId.split(":", 1)
+        # attachmentId는 일회성 토큰이라 discover 시점 값을 못 쓴다. part_id로
+        # 메시지를 다시 찾아 이번 토큰을 새로 받는다.
+        downloaded = await fetch_message_attachment(
+            access_token=token, message_id=message_id, part_id=part_id,
+            file_name=material.fileName, mime_type=material.mimeType or "application/octet-stream",
+        )
+    except Exception:
+        return None
+
+    if has_s3():
+        key = f"materials/{material.ownerId}/{material.projectId}/{material.id}/{downloaded.fileName}"
+        stored_key = put_object(key, downloaded.content, downloaded.contentType)
+        if stored_key is not None:
+            material.storageKey = stored_key
+            material.updatedAt = _now()
+            await material.save()
+    return downloaded.content
 
 
 @router.post("/projects/{project_id}/git/ask")
@@ -830,6 +948,8 @@ async def sync_source_link(
                             ownerId=current_user.id, projectId=project.id, sourceMessageId=message.id,
                             sourceChannel="GMAIL", connectionId=connection.externalId,
                             providerFileId=f"{email.id}:{attachment.id}",
+                            conversationTitle=email.subject,
+                            senderDisplay=email.from_.name or email.from_.address,
                             fileName=attachment.filename, mimeType=attachment.mimeType,
                             sizeBytes=attachment.sizeBytes, direction=direction,
                             communicatedAt=message.occurredAt,
@@ -847,7 +967,9 @@ async def sync_source_link(
                                 ProjectMaterial.providerFileId == f"{email.id}:{attachment.id}",
                             )
                         if material and created_material and has_s3():
-                            await _store_gmail_attachment_original(material, token, email.id)
+                            await _store_gmail_attachment_original(
+                                material, token, email.id, attachment.attachmentId
+                            )
                         if material:
                             material_run = await _ensure_material_run(material)
                             background_tasks.add_task(classify_material_run, str(material_run.id))
