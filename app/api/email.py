@@ -2,11 +2,13 @@
 
 import os
 from datetime import datetime, timedelta
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
-from starlette.responses import RedirectResponse
+from starlette.responses import RedirectResponse, Response
 
+from app.api.slack import SAFE_INLINE_IMAGE_TYPES
 from app.auth import get_current_user
 from app.integration_store import (
     access_token,
@@ -29,6 +31,7 @@ from infra.integrations.gmail import (
     GmailAuthError,
     build_auth_url,
     exchange_code,
+    fetch_message_attachment,
     fetch_my_address,
     fetch_recent,
     refresh_access_token,
@@ -38,6 +41,9 @@ from models.integration import IntegrationConnection
 from models.user import User
 
 router = APIRouter(prefix="/email", tags=["email"])
+
+# Gmail API가 첨부 하나에 매기는 상한(25MB)보다 여유 있게 낮춰 둔다.
+MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
 
 
 class EmailMessagesRequest(BaseModel):
@@ -232,3 +238,53 @@ async def gmail_messages(
         )
 
     return ok(group_gmail_by_company(emails, [connection.externalId]))
+
+
+@router.get("/attachment")
+async def gmail_attachment(
+    messageId: str,
+    partId: str,
+    current_user: User | None = Depends(get_current_user),
+):
+    """메일 목록에 뜬 첨부 하나를 그 자리에서 읽는다. 저장하지 않는다.
+
+    partId만 받는다. attachmentId는 화면이 메일을 받아 온 시점에만 유효한
+    일회성 토큰이라, 화면이 그새 들고 있던 값을 그대로 믿지 않는다 —
+    여기서 메시지를 다시 조회해 이번 토큰을 새로 받는다.
+    """
+    if current_user is None:
+        return Response("로그인이 필요합니다.", status_code=401)
+
+    owner_id = str(current_user.id)
+    connection = await latest_gmail_connection(owner_id)
+    if connection is None:
+        return Response("Gmail이 연결되어 있지 않습니다.", status_code=404)
+
+    try:
+        connection, token = await _fresh_token(owner_id, connection)
+        downloaded = await fetch_message_attachment(
+            access_token=token, message_id=messageId, part_id=partId,
+        )
+    except (GmailAuthError, TokenEncryptionError):
+        return Response("Gmail 연결이 끊어졌습니다. Gmail을 다시 연결해 주세요.", status_code=401)
+    except IntegrationError:
+        return Response("파일을 가져오지 못했습니다.", status_code=502)
+
+    if len(downloaded.content) > MAX_ATTACHMENT_BYTES:
+        return Response("10MB가 넘는 파일은 미리 볼 수 없습니다.", status_code=400)
+
+    # Slack 파일 응답(app/api/slack.py)과 같은 정책이다. 이미지 몇 종만 inline을
+    # 허락한다. 화면의 PDF·DOCX 뷰어는 fetch로 받아 blob으로 다루므로
+    # Content-Disposition·Content-Type이 attachment/octet-stream이어도 상관없다.
+    inline = downloaded.contentType in SAFE_INLINE_IMAGE_TYPES
+    encoded_name = quote(downloaded.fileName)
+    return Response(
+        content=downloaded.content,
+        media_type=downloaded.contentType if inline else "application/octet-stream",
+        headers={
+            "Cache-Control": "private, no-store",
+            "Content-Disposition": f"{'inline' if inline else 'attachment'}; filename*=UTF-8''{encoded_name}",
+            "Content-Security-Policy": "default-src 'none'; sandbox",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
