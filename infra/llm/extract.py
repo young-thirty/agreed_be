@@ -4,63 +4,35 @@ L0(발화 분할)은 호출부(infra/ingest)가 이미 끝낸 상태로 받는�
 L4(사람 승인)는 core/contract_ops.py가 담당한다.
 """
 
-import json
 from collections.abc import Sequence
 
 from core.domain import Evidence, RequirementState
 from core.grounding import ground_evidence
 from core.state_machine import demote
-from infra.llm.client import EXTRACT_MODEL, get_client, has_api_key
+from infra.llm.client import has_api_key
 from infra.llm.fallback import build_fallback_result
+from infra.llm.harness import run_json
 from infra.llm.prompts import EXTRACT_SYSTEM_PROMPT, build_conversation_text
 from infra.llm.schemas import ExtractResult
 from models.requirement import Requirement
 
 
-async def _call_model(
-    utterances: Sequence,
-    context: str,
-    retry_hint: str | None = None,
-) -> ExtractResult:
-    """L1: JSON mode로 받아 Pydantic으로 검증한다."""
-    conversation = build_conversation_text(utterances)
-    if context:
-        conversation = f"{context}\n{conversation}"
-    if retry_hint:
-        conversation += (
-            f"\n\n[이전 응답이 검증에 실패했다: {retry_hint}. 스키마에 맞게 다시 출력해라.]"
-        )
+async def _extract(utterances: Sequence, context: str) -> ExtractResult:
+    """L1: JSON mode로 받아 Pydantic으로 검증한다.
 
-    response = await get_client().chat.completions.create(
-        model=EXTRACT_MODEL,
-        response_format={"type": "json_object"},
-        # 추출은 창작이 아니다. 기본값(1.0)으로 두면 같은 대화에서도 결과가
-        # 흔들려, 맥락을 줘도 요구사항을 놓치는 일이 생긴다.
-        temperature=0,
-        messages=[
-            {"role": "system", "content": EXTRACT_SYSTEM_PROMPT},
-            {"role": "user", "content": conversation},
-        ],
-    )
+    검증 실패 시 1회 재시도하고 그래도 안 되면 빈 결과로 넘어가는 규칙은
+    infra/llm/harness.py가 담당한다. 무한 재시도는 하지 않는다.
 
-    content = response.choices[0].message.content
-    if not content:
-        raise ValueError("모델이 빈 응답을 반환했습니다.")
-    return ExtractResult.model_validate(json.loads(content))
-
-
-async def _extract_with_retry(utterances: Sequence, context: str) -> ExtractResult:
-    """검증에 실패하면 오류를 덧붙여 1회만 재시도한다. 그래도 실패하면 빈 결과다.
-
-    무한 재시도는 하지 않는다. 사용자를 오래 기다리게 하지 않기 위해서다.
+    context는 대화 앞에 붙는 맥락이다. 이게 없으면 모델이 누가 요구하는
+    쪽인지 몰라 요구사항을 통째로 놓친다.
     """
-    try:
-        return await _call_model(utterances, context)
-    except Exception as first_error:
-        try:
-            return await _call_model(utterances, context, retry_hint=str(first_error))
-        except Exception:
-            return ExtractResult(items=[])
+    conversation = build_conversation_text(utterances)
+    result = await run_json(
+        system_prompt=EXTRACT_SYSTEM_PROMPT,
+        user_content=f"{context}\n{conversation}" if context else conversation,
+        schema=ExtractResult,
+    )
+    return result or ExtractResult(items=[])
 
 
 async def extract_requirements(
@@ -85,7 +57,7 @@ async def extract_requirements(
     if result is None:
         if not has_api_key():
             return []
-        result = await _extract_with_retry(utterances, context)
+        result = await _extract(utterances, context)
 
     existing_by_id = {str(r.id): r for r in existing}
     requirements: list[tuple[str | None, RequirementState]] = []

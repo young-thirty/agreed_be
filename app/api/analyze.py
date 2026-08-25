@@ -19,7 +19,8 @@ router = APIRouter(tags=["analyze"])
 
 class AnalyzeRequest(BaseModel):
     # 프로젝트 없이는 분석하지 않는다. 누가 클라이언트인지와 계약 내용을 모르면
-    # 모델이 멀쩡한 요구사항도 통째로 놓친다.
+    # 모델이 멀쩡한 요구사항도 통째로 놓친다(맥락 없이 돌리면 0건이 나온다).
+    # 프론트는 이제 항상 프로젝트를 지정하므로 선택 값으로 두지 않는다.
     projectId: PydanticObjectId
     rawText: str = Field(min_length=1, max_length=100_000)
     channel: Channel

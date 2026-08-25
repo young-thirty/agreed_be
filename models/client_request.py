@@ -26,6 +26,8 @@ class ClientRequest(Document):
     aiProcessingStatus: ProcessingStatus = "PENDING"
     summaryTitle: str | None = Field(default=None, max_length=80)
     aiDecisionStatus: AiDecisionStatus | None = None
+    # 사람이 검증할 수 있는 짧은 판단 이유. 내부 추론 과정은 저장하지 않는다.
+    decisionReason: str | None = Field(default=None, max_length=200)
     responseStatus: ResponseStatus = "WAITING"
     requestEvidence: list[RequestEvidence] = Field(default_factory=list)
     documentEvidence: list[DocumentEvidence] = Field(default_factory=list)

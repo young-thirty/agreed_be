@@ -48,8 +48,12 @@ class ClarificationQuestionsResult(BaseModel):
     questions: list[str] = Field(min_length=1, max_length=6)
 
 
-class ReplyDraftResult(BaseModel):
-    """고객에게 보낼 답변 초안. 사람이 그대로 읽고 고칠 수 있어야 한다."""
+class RequirementReplyResult(BaseModel):
+    """요구사항 하나를 놓고 만든 답변 초안. 사람이 그대로 읽고 고칠 수 있어야 한다.
+
+    아래 ReplyDraftResult(요청 단위)와 쓰임이 다르다. 이름이 겹치면 뒤 정의가
+    앞 정의를 조용히 덮으므로 갈라 둔다.
+    """
 
     draft: str = Field(min_length=1, max_length=4000)
 
@@ -62,3 +66,50 @@ class RequestAnalysisResult(BaseModel):
 
 class MaterialClassificationResult(BaseModel):
     documentType: DocumentType
+
+
+# --- 서브 에이전트 출력 -------------------------------------------------------
+#
+# 아래 스키마는 infra/llm/subagents/가 쓴다. 모델이 무엇을 낼 수 있는지를
+# 여기서 좁혀두면, 하네스가 받은 결과를 그대로 신뢰하지 않고 한 번 더 거를 수 있다.
+
+
+class ExtractedRequest(BaseModel):
+    """원문 한 건에서 뽑아낸 클라이언트 요청 하나."""
+
+    summaryTitle: str = Field(max_length=80)
+    quote: str = Field(default="", max_length=500)
+
+
+class RequestExtractionResult(BaseModel):
+    """원문 한 건에 요청이 여러 개 있을 수 있다. 없으면 빈 목록이다.
+
+    상한을 두는 이유는 모델이 한 문장을 여러 요청으로 잘게 쪼개는 경우가 있어서다.
+    """
+
+    requests: list[ExtractedRequest] = Field(default_factory=list, max_length=5)
+
+
+class ContractMatchResult(BaseModel):
+    """계약 대조 서브 에이전트의 결론.
+
+    documentQuote는 모델이 도구 결과에서 옮겨 적은 근거 조항이다. 코드가 실제
+    문서에 있는지 다시 확인하고, 없으면 버린 뒤 판정을 주황으로 내린다.
+    """
+
+    decision: AiDecisionStatus
+    reason: str = Field(default="", max_length=200)
+    documentQuote: str = Field(default="", max_length=500)
+    documentId: str = Field(default="", max_length=64)
+
+
+class ChecklistResult(BaseModel):
+    """답변 전에 사람이 확인할 항목. 사람이 고르고 지우고 더한다."""
+
+    items: list[str] = Field(default_factory=list, max_length=6)
+
+
+class ReplyDraftResult(BaseModel):
+    """고객에게 보낼 답변 초안. 생성만 하고 발송하지 않는다."""
+
+    body: str = Field(max_length=3000)

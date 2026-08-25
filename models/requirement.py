@@ -13,6 +13,9 @@ class Requirement(RequirementState, Document):
 
     ownerId: PydanticObjectId
     projectId: PydanticObjectId | None = None
+    # 이 요구사항을 만든 ClientRequest. 같은 요청으로 카드를 두 번 만들지 않기
+    # 위한 멱등 키이자, 화면에서 요구사항과 원본 요청을 잇는 고리다.
+    sourceRequestId: PydanticObjectId | None = None
 
     class Settings:
         name = "requirements"
@@ -20,4 +23,5 @@ class Requirement(RequirementState, Document):
             IndexModel([("ownerId", ASCENDING)]),
             IndexModel([("ownerId", ASCENDING), ("projectId", ASCENDING)]),
             IndexModel([("ownerId", ASCENDING), ("projectId", ASCENDING), ("status", ASCENDING)]),
+            IndexModel([("ownerId", ASCENDING), ("sourceRequestId", ASCENDING)]),
         ]
