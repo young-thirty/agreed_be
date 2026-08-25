@@ -1,0 +1,19 @@
+# 파이썬
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# 환경변수 (API 키가 들어간다. 절대 커밋하지 않는다)
+.env
+.env.local
+
+# 도구
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# 운영체제, 에디터
+.DS_Store
+*.log
