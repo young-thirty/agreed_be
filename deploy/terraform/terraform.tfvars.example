@@ -1,0 +1,19 @@
+aws_region            = "ap-northeast-2"
+service_name          = "agreed-be"
+ecr_repository_name   = "agreed-be"
+github_repository     = "young-thirty/agreed_be"
+frontend_origin       = "https://<frontend-domain>"
+api_public_url        = "https://<app-runner-service-url>"
+
+mongodb_url           = "mongodb+srv://<user>:<password>@<cluster>/<db>?retryWrites=true&w=majority"
+mongodb_db            = "agreed"
+
+google_client_id      = "<google-client-id>"
+google_redirect_uri   = "https://<app-runner-service-url>/api/email/callback"
+
+slack_client_id       = "<slack-client-id>"
+slack_redirect_uri    = "https://<app-runner-service-url>/api/slack/callback"
+
+demo_session_enabled  = false
+session_cookie_secure  = true
+session_cookie_samesite = "lax"

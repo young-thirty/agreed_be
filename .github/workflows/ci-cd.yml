@@ -1,0 +1,117 @@
+name: Agreed BE CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'ap-northeast-2' }}
+  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || 'agreed-be' }}
+  APP_RUNNER_SERVICE_ARN: ${{ vars.APP_RUNNER_SERVICE_ARN }}
+
+jobs:
+  test:
+    name: Python compile and OpenAPI check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Compile
+        run: python -m compileall -q app core infra models scripts
+
+      - name: OpenAPI smoke test
+        run: |
+          python - <<'PY'
+          from app.main import app
+
+          paths = app.openapi()["paths"]
+          required = {
+              "/api/health",
+              "/api/auth/demo-session",
+              "/api/projects",
+              "/api/projects/{project_id}/source-links/{source_link_id}/sync",
+          }
+          missing = required.difference(paths)
+          if missing:
+              raise SystemExit(f"missing OpenAPI paths: {sorted(missing)}")
+          print(f"OpenAPI paths: {len(paths)}")
+          PY
+
+      - name: Build container
+        run: docker build --tag agreed-be:ci .
+
+      - name: Validate Terraform
+        working-directory: deploy/terraform
+        run: |
+          terraform init -backend=false
+          terraform validate
+
+  deploy:
+    name: Push ECR and deploy App Runner
+    if: github.event_name == 'push' && vars.APP_RUNNER_SERVICE_ARN != ''
+    needs: test
+    runs-on: ubuntu-latest
+    env:
+      AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check deployment configuration
+        if: env.AWS_ROLE_ARN == ''
+        run: |
+          echo "AWS_ROLE_ARN GitHub Actions secret이 없습니다. Terraform output을 등록하세요."
+          exit 1
+
+      - name: Configure AWS from GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build \
+            --tag "$REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" \
+            --tag "$REGISTRY/$ECR_REPOSITORY:latest" .
+          docker push "$REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          docker push "$REGISTRY/$ECR_REPOSITORY:latest"
+
+      - name: Start App Runner deployment
+        run: aws apprunner start-deployment --service-arn "$APP_RUNNER_SERVICE_ARN"
+
+      - name: Wait for HTTPS health
+        env:
+          SERVICE_ARN: ${{ env.APP_RUNNER_SERVICE_ARN }}
+        run: |
+          SERVICE_URL="$(aws apprunner describe-service --service-arn "$SERVICE_ARN" --query 'Service.ServiceUrl' --output text)"
+          for attempt in $(seq 1 36); do
+            if curl --fail --silent --show-error "https://$SERVICE_URL/api/health"; then
+              echo
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "App Runner health check timed out: https://$SERVICE_URL/api/health"
+          exit 1

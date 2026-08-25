@@ -1,0 +1,13 @@
+.git
+.github
+.venv
+__pycache__
+*.py[cod]
+.env
+.env.*
+*.tfvars
+*.tfstate*
+.terraform
+.terraform.lock.hcl
+.DS_Store
+*.log

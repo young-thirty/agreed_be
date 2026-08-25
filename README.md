@@ -49,6 +49,7 @@ http://localhost:8000/api/slack/callback
 - 프론트 연결 안내: [FE_INTEGRATION.md](./FE_INTEGRATION.md)
 - 데이터·AI 설계: [DATA_AI_PIPELINE.md](./DATA_AI_PIPELINE.md)
 - 최종 화면·DTO·API 설계: [PRODUCT_API_DESIGN.md](./PRODUCT_API_DESIGN.md)
+- AWS Terraform·CI/CD: [deploy/README.md](./deploy/README.md)
 
 실제 Google·Slack callback 테스트는 각 콘솔에 위 URI와 secret을 등록한 뒤
 진행합니다. 운영 배포 주소가 생기면 두 callback을 HTTPS 운영 주소로 한 번 더

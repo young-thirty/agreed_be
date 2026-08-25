@@ -9,6 +9,12 @@ venv/
 .env
 .env.local
 
+# Terraform 상태·개인 변수
+*.tfvars
+*.tfstate
+*.tfstate.*
+deploy/terraform/.terraform/
+
 # 도구
 .pytest_cache/
 .ruff_cache/
