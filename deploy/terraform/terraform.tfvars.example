@@ -16,4 +16,4 @@ slack_redirect_uri    = "https://<app-runner-service-url>/api/slack/callback"
 
 demo_session_enabled  = false
 session_cookie_secure  = true
-session_cookie_samesite = "lax"
+session_cookie_samesite = "none"
