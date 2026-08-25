@@ -325,6 +325,10 @@ async def ticket_detail(
         "decision": _decision_payload(current_decision),
         "history": history,
         "materials": [public_material(item) for item in materials],
+        # 저장된 솔루션만 실어 보낸다. 여기서 만들지 않는 이유는 상세 조회가
+        # 에이전트 여러 개를 기다리는 느린 API가 되면 안 되기 때문이다.
+        # 만드는 것은 POST /api/requests/{id}/solution 이 맡는다.
+        "solution": ticket.solution.model_dump(mode="json") if ticket.solution else None,
     })
 
 

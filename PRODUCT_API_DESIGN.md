@@ -29,7 +29,9 @@
 | 요청 단건 | `GET /api/requests/{requestId}` | 동일 DTO + 원문·근거 |
 | 답변 전 확인 항목 | `POST /api/requests/{requestId}/checklist` | `{ items: string[] }` |
 | 답변 초안 생성 | `POST /api/requests/{requestId}/reply-draft` | `{ body: string }` |
-| 대응 상태 변경 | `PATCH /api/requests/{requestId}/response-status` | 동일 DTO |
+| 티켓 상태 변경 | `PATCH /api/requests/{requestId}/ticket-status` | 동일 DTO |
+| 티켓 솔루션 생성 | `POST /api/requests/{requestId}/solution` | `TicketSolution` |
+| 티켓 목록·상세 | `GET /api/tickets`, `GET /api/tickets/{ticketId}` | 화면 한 장 묶음 |
 | 자료 탭 | `GET /api/projects/{projectId}/materials?ticketId=` | `ProjectMaterialSummary[]` |
 | 자료 티켓 할당·해제 | `PATCH /api/projects/{projectId}/materials/{materialId}` | `ProjectMaterialSummary` |
 
@@ -48,7 +50,7 @@ ProcessingStatus   PENDING | PROCESSING | COMPLETED | FAILED
 AiDecisionStatus   IN_SCOPE_ACTION_REQUIRED
                    | OUT_OF_SCOPE_COORDINATION_REQUIRED
                    | EXTRA_REQUEST
-ResponseStatus     WAITING | COMPLETED
+TicketStatus       active | done | rejected
 Direction          RECEIVED | SENT
 DocumentType       PROPOSAL | CONTRACT | REQUIREMENTS | MEETING_NOTES | OTHER
 MaterialOrigin     CHANNEL | MANUAL
@@ -203,7 +205,8 @@ on-demand로 만든다.
 ```text
 POST /api/requests/{requestId}/checklist     사람이 확인할 항목 3~5개
 POST /api/requests/{requestId}/reply-draft   선택한 항목만 반영한 답변 초안(발송 안 함)
-PATCH /api/requests/{requestId}/response-status   WAITING ↔ COMPLETED. AI는 관여하지 않는다
+PATCH /api/requests/{requestId}/ticket-status    active ↔ done ↔ rejected. AI는 관여하지 않는다
+POST  /api/requests/{requestId}/solution         계약 범위·개발 현황·영향·작업 가능 여부를 종합
 ```
 
 자료는 파일명+추출 텍스트로 5종 중 하나를 구조화 분류한다. 정상 분류의 그 외 문서는

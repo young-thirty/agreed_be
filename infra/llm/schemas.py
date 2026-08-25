@@ -12,7 +12,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from core.state_machine import LLM_PROPOSABLE
-from core.project_data import AiDecisionStatus, DocumentType
+from core.project_data import AiDecisionStatus, DocumentType, FeasibilityVerdict
 
 # LLM_PROPOSABLE를 Literal로 바꿔 스키마에 박는다. 상태 목록을 두 곳에
 # 따로 적지 않기 위해서다.
@@ -127,6 +127,42 @@ class TicketAdviceResult(BaseModel):
     adviceReason: str = Field(max_length=400)
     basisQuote: str = Field(default="", max_length=500)
     basisDocumentId: str = Field(default="", max_length=64)
+
+
+class DevelopmentStatusResult(BaseModel):
+    """개발 현황 에이전트의 결론. 저장소를 읽고 구조화한 값이다."""
+
+    targetFeature: str = Field(default="", max_length=200)
+    currentState: str = Field(default="", max_length=600)
+    relatedPaths: list[str] = Field(default_factory=list, max_length=8)
+    relatedRefs: list[str] = Field(default_factory=list, max_length=5)
+
+
+class ImpactAnalysisResult(BaseModel):
+    """영향 분석 에이전트의 결론. 무엇을 건드리게 되는지만 적는다."""
+
+    codeAreas: list[str] = Field(default_factory=list, max_length=8)
+    screens: list[str] = Field(default_factory=list, max_length=6)
+    dataModels: list[str] = Field(default_factory=list, max_length=6)
+    authImpact: str = Field(default="", max_length=300)
+    existingFeatureImpact: str = Field(default="", max_length=400)
+    testScope: list[str] = Field(default_factory=list, max_length=6)
+
+
+class FeasibilityResult(BaseModel):
+    """작업 가능 여부. 계약 범위 판정과 다른 축이다."""
+
+    verdict: FeasibilityVerdict = "needs_clarification"
+    reason: str = Field(default="", max_length=400)
+    requiredHumanInput: list[str] = Field(default_factory=list, max_length=5)
+
+
+class SolutionSynthesisResult(BaseModel):
+    """종합 에이전트의 결론. 프리랜서용 조언과 고객용 초안을 함께 낸다."""
+
+    adviceMessage: str = Field(max_length=800)
+    adviceReason: str = Field(default="", max_length=500)
+    replyDraft: str = Field(default="", max_length=2000)
 
 
 class ChecklistResult(BaseModel):

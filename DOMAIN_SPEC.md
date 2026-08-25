@@ -187,9 +187,26 @@ LLM은 "이 메시지가 이 프로젝트 얘기인가"를 함께 판단하므�
 ### 6.1 두 단계로 나눈다
 
 ```text
-POST /api/tickets/{id}/solution        조언 + 이유 + 근거 + 파일   (한 번, 저장)
-POST /api/tickets/{id}/reply-draft     초안 하나                    (스타일마다 호출)
+POST /api/requests/{id}/solution     솔루션 패키지 전체            (한 번, 저장)
+POST /api/requests/{id}/reply-draft  말투 바꾼 초안 하나           (스타일마다 호출)
+GET  /api/tickets/{id}               저장된 솔루션을 함께 내려준다 (만들지는 않는다)
 ```
+
+솔루션 패키지에는 다음이 들어간다.
+
+| 필드 | 만든 곳 |
+|---|---|
+| `scopeDecision` | 계약 범위 대조 (`subagents/contract_match.py`) |
+| `basisQuote` · `basisDocumentId` | 같음. 코드가 원문과 재대조한다 |
+| `developmentStatus` | 개발 현황 (`subagents/dev_status.py`, 저장소 clone) |
+| `impactAnalysis` | 영향 분석 (`subagents/impact.py`) |
+| `feasibility` | 작업 가능 여부 (`subagents/impact.py`) |
+| `adviceMessage` · `adviceReason` · `replyDraft` | 종합 (`infra/llm/solution.py`) |
+| `relatedFiles` | AI가 아니라 DB가 정한다. 티켓 전용 자료를 먼저 쓴다 |
+
+`GET /api/tickets/{id}`은 저장된 솔루션을 실어 보내기만 한다. 여기서 만들지
+않는 이유는 상세 조회가 에이전트 여러 개를 기다리는 느린 API가 되면 안 되기
+때문이다.
 
 **근거.** 조언과 근거는 티켓당 한 번 만들면 되고 바뀌지 않는다. 저장해 두고 화면
 진입 때마다 다시 만들지 않는다.

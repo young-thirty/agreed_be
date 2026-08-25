@@ -85,11 +85,32 @@ AgentTool(name, description, parameters, run)  # run은 async 함수
 | 에이전트 | 위치 | 도구 | 방식 |
 |---|---|---|---|
 | 요청 추출 | `orchestrator.py` | 없음 | `run_json` |
-| 계약 대조 | `subagents/contract_match.py` | `read_contract`, `search_materials` | `run_agent` |
-| 코드 탐색 | `subagents/git_explore.py` | `list_files`, `read_file`, `grep` | `run_agent` |
+| 티켓 매칭 | `subagents/ticket_match.py` | 없음 | `run_json` |
+| 계약 범위 대조 | `subagents/contract_match.py` | `read_contract`, `search_materials` | `run_agent` |
+| 개발 현황 | `subagents/dev_status.py` | `list_files`, `read_file`, `grep` | `run_agent` |
+| 영향 분석 | `subagents/impact.py` | 없음 | `run_json` |
+| 작업 가능 여부 | `subagents/impact.py` | 없음 | `run_json` |
+| 솔루션 종합 | `solution.py` | 없음 | `run_json` |
+| 코드 질문(단독) | `subagents/git_explore.py` | `list_files`, `read_file`, `grep` | `run_agent` |
 | 체크리스트 | `subagents/checklist.py` | 없음 | `run_json` |
 | 답변 초안 | `subagents/reply_draft.py` | 없음 | `run_json` |
 | 자료 분류 | `app/api/projects.py` | 없음 | `run_json` |
+
+### 티켓 솔루션 파이프라인 (`infra/llm/solution.py`)
+
+```text
+1차 (병렬)   계약 범위 대조  |  개발 현황(저장소 clone)
+2차 (병렬)   영향 분석       |  작업 가능 여부      ← 개발 현황을 읽기 전용으로 받음
+3차          솔루션 종합                            ← 1·2차 결과만 재료로 씀
+```
+
+네 판단은 서로 다른 축을 본다. **계약 범위**는 돈·범위의 문제, **개발 현황**은
+사실 확인, **영향 범위**는 작업량, **작업 가능 여부**는 실현의 문제다. 계약
+밖이어도 기술적으로 쉬울 수 있고, 계약 안이어도 막힐 수 있어 섞으면 안 된다.
+
+어느 단계가 실패해도 나머지는 살린다. 저장소가 없으면 개발 현황은 `None`이 되고,
+영향 분석과 작업 가능 여부는 "확인하지 못했다"는 사실을 프롬프트로 받아 근거
+없이 단정하지 않는다. 종합이 실패하면 조언 자리에 안내 문장이 들어간다.
 
 도구가 필요 없는 판단에 `run_agent`를 쓰지 않는다. 원문 하나를 보고 요약하는 일에
 도구 루프를 돌리면 토큰과 시간만 쓴다.
@@ -211,4 +232,4 @@ Terraform이 버킷과 IAM을 만든다. `S3_BUCKET_NAME`이 비어 있으면 �
 (ownerId, targetType, inputHash, promptVersion)  unique
 ```
 
-지금 값은 `CLIENT_REQUEST_PROMPT_VERSION = "v2-orchestrator"`다.
+지금 값은 `CLIENT_REQUEST_PROMPT_VERSION = "v3-ticket-match"`다.

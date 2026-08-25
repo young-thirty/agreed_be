@@ -43,7 +43,7 @@ from infra.llm.orchestrator import AnalyzedRequest, analyze_request_message
 from infra.llm.subagents.checklist import build_checklist
 from infra.llm.subagents.git_explore import ask_repository
 from infra.llm.subagents.reply_draft import build_reply_draft
-from infra.llm.subagents.ticket_advice import build_ticket_advice
+from infra.llm.solution import build_solution
 from infra.security.provider_tokens import TokenEncryptionError
 from infra.storage.s3 import get_object, has_s3, put_object
 from models import (
@@ -333,13 +333,18 @@ async def ticket_solution(
     refresh: bool = False,
     current_user: User | None = Depends(get_current_user),
 ):
-    """티켓 하나의 솔루션 패키지를 만든다. 조언·이유·근거 조문·관련 파일이다.
+    """티켓 하나의 솔루션 패키지를 만든다.
 
-    한 번 만들면 저장하고 다음부터는 그대로 돌려준다. 조언과 근거는 티켓이
-    바뀌지 않는 한 달라질 이유가 없어서, 화면에 들어올 때마다 다시 만들면
-    토큰만 쓴다. 다시 만들려면 refresh=true를 준다.
+    계약 범위 대조, 개발 현황, 영향 범위, 작업 가능 여부를 각각 판단한 뒤
+    하나로 종합한다(infra/llm/solution.py). 조언·근거·관련 파일에 더해
+    개발 현황과 영향 분석, 답변 초안까지 함께 나온다.
 
-    답변 초안은 여기 없다. 말투마다 따로 만드는 값이라 /reply-draft가 맡는다.
+    한 번 만들면 저장하고 다음부터는 그대로 돌려준다. 티켓이 바뀌지 않는 한
+    달라질 이유가 없어서, 화면에 들어올 때마다 다시 만들면 토큰만 쓴다.
+    다시 만들려면 refresh=true를 준다.
+
+    여기 담기는 replyDraft는 AI가 만든 기본 초안 하나다. 사람이 말투를 바꿔
+    다시 만든 초안은 /reply-draft가 만들고 TicketDecision.drafts에 들어간다.
     """
     if current_user is None:
         return fail("로그인이 필요합니다.", 401)
@@ -349,13 +354,16 @@ async def ticket_solution(
     if item.solution is not None and not refresh:
         return ok(item.solution.model_dump(mode="json"))
 
-    advice = await build_ticket_advice(
+    message = await SourceMessage.find_one(
+        SourceMessage.id == item.sourceMessageId, SourceMessage.ownerId == item.ownerId
+    )
+    draft = await build_solution(
         owner_id=item.ownerId,
         project_id=item.projectId,
-        ticket_id=item.id,
         summary_title=item.summaryTitle or "제목 없는 요청",
-        decision=item.aiDecisionStatus or "판정 없음",
+        requirement=item.requirement,
         request_quote=item.requestEvidence[0].quote if item.requestEvidence else "",
+        raw_text=message.rawText if message else "",
     )
 
     # 현재 티켓 전용 자료를 먼저 쓰고, 모자란 자리는 프로젝트 공용 자료로 채운다.
@@ -378,10 +386,15 @@ async def ticket_solution(
         )
         materials.extend(shared_materials)
     item.solution = TicketSolution(
-        adviceMessage=advice.adviceMessage,
-        adviceReason=advice.adviceReason,
-        basisQuote=advice.basisQuote,
-        basisDocumentId=advice.basisDocumentId,
+        adviceMessage=draft.adviceMessage,
+        adviceReason=draft.adviceReason,
+        basisQuote=draft.basisQuote,
+        basisDocumentId=draft.basisDocumentId,
+        scopeDecision=draft.scopeDecision,
+        developmentStatus=draft.developmentStatus,
+        impactAnalysis=draft.impactAnalysis,
+        feasibility=draft.feasibility,
+        replyDraft=draft.replyDraft,
         relatedFiles=[
             RelatedFile(
                 materialId=str(material.id),
