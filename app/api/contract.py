@@ -52,7 +52,7 @@ async def apply(body: ApplyRequest):
         return fail("해당 요구사항을 찾을 수 없습니다.", 404)
 
     try:
-        next_state = apply_to_contract(contract, requirement)
+        next_state = apply_to_contract(contract, requirement, str(requirement.id))
     except ValueError as error:
         return fail(str(error))
 

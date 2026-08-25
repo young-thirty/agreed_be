@@ -6,7 +6,11 @@
 from core.domain import ContractDiff, ContractState, RequirementState
 
 
-def apply_to_contract(contract: ContractState, requirement: RequirementState) -> ContractState:
+def apply_to_contract(
+    contract: ContractState,
+    requirement: RequirementState,
+    requirement_id: str | None = None,
+) -> ContractState:
     """합의된 요구사항을 계약에 반영한다.
 
     status가 '합의'가 아니거나 decision이 없으면 예외를 던진다. 조용히
@@ -27,6 +31,7 @@ def apply_to_contract(contract: ContractState, requirement: RequirementState) ->
         scope=[*contract.scope, requirement.title],
         dueDate=requirement.decision.dueDate,
         amount=contract.amount + requirement.decision.amountDelta,
+        appliedRequirementId=requirement_id,
     )
 
 

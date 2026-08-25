@@ -113,6 +113,9 @@ class ContractState(BaseModel):
     scope: list[str]
     dueDate: str
     amount: int
+    # 이 버전을 만든 요구사항. 최초 계약은 None이다.
+    # 계약 분쟁이 도메인이라 "무엇 때문에 이 버전이 생겼는지"가 남아야 한다.
+    appliedRequirementId: str | None = None
 
 
 class ContractDiff(BaseModel):
