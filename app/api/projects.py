@@ -133,6 +133,9 @@ class RequirementTransitionRequest(BaseModel):
 
 class ReplyDraftRequest(BaseModel):
     tone: Tone = "professional"
+    # 사람이 이 요구사항을 어떤 상태로 확정할지 정한 값. 초안 내용이 여기서 갈린다.
+    # 아직 안 정했으면 None이고, 그때는 확인 후 회신하겠다는 중립적인 답이 나온다.
+    intent: RequirementStatus | None = None
     # 사람이 고르고 고친 질문이 들어온다. 화면에서 전부 뺐으면 빈 목록이다.
     questions: list[str] = Field(default_factory=list, max_length=10)
 
@@ -755,7 +758,7 @@ async def requirement_reply(
     try:
         draft = await build_reply(
             await _requirement_text(project, requirement, current_user.id),
-            tone=body.tone, questions=body.questions,
+            tone=body.tone, questions=body.questions, intent=body.intent,
         )
     except Exception:
         return fail("답변 초안을 만들지 못했습니다. 다시 시도해 주세요.", 502)

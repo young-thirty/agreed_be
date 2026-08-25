@@ -47,9 +47,8 @@ Channel = Literal["이메일", "슬랙"]
 
 # 답변 초안의 말투. 같은 내용을 관계와 상황에 맞게 다르게 표현한다.
 #
-# decline은 말투라기보다 사람이 이미 내린 결정이다. 거절할지 말지는 AI가
-# 정하지 않으므로, 사람이 이 값을 고를 때만 거절하는 초안이 나온다.
-Tone = Literal["friendly", "professional", "concise", "firm", "decline"]
+# 무엇을 말할지(수락·거절·검토)는 여기 없다. 그건 사람이 고른 상태가 정한다.
+Tone = Literal["friendly", "professional", "concise", "firm"]
 
 
 class Utterance(BaseModel):
