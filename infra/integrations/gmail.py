@@ -20,6 +20,14 @@ GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GMAIL_SCOPES = ("https://www.googleapis.com/auth/gmail.readonly",)
 
+# Gmail은 사용자당 초당 250 quota unit을 준다. messages.get이 건당 5 unit이라
+# 100개를 한꺼번에 던지면 버스트가 500 unit이 되어 429가 돌아온다.
+MESSAGE_FETCH_CONCURRENCY = 10
+
+
+class GmailAuthError(IntegrationError):
+    """Gmail이 인증 자체를 거부했다. 재연동이 필요한 경우이며, 일시적 실패와 구분한다."""
+
 
 class GmailTokens(BaseModel):
     accessToken: str
@@ -155,6 +163,8 @@ async def _gmail_get(
         )
     except httpx.HTTPError as error:
         raise IntegrationError("Gmail에 연결하지 못했습니다.") from error
+    if response.status_code == 401:
+        raise GmailAuthError("Gmail이 인증을 거부했습니다.")
     return _json_object(response, "Gmail")
 
 
@@ -259,15 +269,32 @@ async def fetch_my_address(*, access_token: str) -> str:
     return address
 
 
+def _recent_query(max_messages: int, counterparty: str | None) -> str:
+    terms = ["-in:chats", "-in:spam"]
+    if counterparty:
+        # 상대 주소로 Gmail에서 걸러야 100통을 받아다 한 명 것만 쓰는 낭비가 없어진다.
+        terms.append(f"(from:{counterparty} OR to:{counterparty})")
+    return urlencode({"maxResults": str(max_messages), "q": " ".join(terms)})
+
+
 async def fetch_recent(
     *,
     access_token: str,
     max_messages: int = 20,
+    counterparty: str | None = None,
 ) -> list[RawEmail]:
     if not 1 <= max_messages <= 100:
         raise ValueError("max_messages는 1 이상 100 이하여야 합니다.")
 
-    query = urlencode({"maxResults": str(max_messages), "q": "-in:chats -in:spam"})
+    limit = asyncio.Semaphore(MESSAGE_FETCH_CONCURRENCY)
+
+    async def fetch_one(client: httpx.AsyncClient, message_id: str) -> dict[str, Any]:
+        async with limit:
+            return await _gmail_get(
+                client, f"messages/{message_id}?format=full", access_token
+            )
+
+    query = _recent_query(max_messages, counterparty)
     async with create_http_client() as client:
         listing = await _gmail_get(client, f"messages?{query}", access_token)
         raw_items = listing.get("messages")
@@ -281,10 +308,19 @@ async def fetch_recent(
             for item in raw_items
             if isinstance(item, dict) and isinstance(item.get("id"), str)
         ]
-        messages = await asyncio.gather(
-            *(
-                _gmail_get(client, f"messages/{message_id}?format=full", access_token)
-                for message_id in message_ids
-            )
+        if not message_ids:
+            return []
+        results = await asyncio.gather(
+            *(fetch_one(client, message_id) for message_id in message_ids),
+            return_exceptions=True,
         )
+
+    # 몇 통이 실패해도 나머지는 살린다. 한 통 때문에 전부 빈손으로 돌아오면
+    # 사용자에게는 연동이 끊긴 것처럼 보인다.
+    for result in results:
+        if isinstance(result, GmailAuthError):
+            raise result
+    messages = [result for result in results if isinstance(result, dict)]
+    if not messages:
+        raise IntegrationError("Gmail에서 메일 본문을 가져오지 못했습니다.")
     return [_to_raw_email(message) for message in messages]
