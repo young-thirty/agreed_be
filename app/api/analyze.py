@@ -1,5 +1,7 @@
 """대화 분석. 도메인 규칙은 없다. ingest → llm으로 넘기고 저장·응답만 한다."""
 
+import logging
+
 from beanie import PydanticObjectId
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
@@ -15,6 +17,9 @@ from models import Contract, Project, Requirement
 from models.user import User
 
 router = APIRouter(tags=["analyze"])
+
+# 사용자에게는 읽을 수 있는 한 문장만 보낸다. 원인은 서버 로그에 남긴다.
+logger = logging.getLogger(__name__)
 
 
 class AnalyzeRequest(BaseModel):
@@ -68,6 +73,7 @@ async def analyze(
         )
         extracted = await extract_requirements(utterances, existing, context)
     except Exception:
+        logger.exception("대화 분석 실패 (project=%s)", body.projectId)
         return fail("대화 내용을 분석하지 못했습니다. 다시 시도해 주세요.", 500)
 
     # 모델이 기존 카드를 가리켰으면 그 카드를, 아니면 같은 제목의 카드를 갱신한다.
