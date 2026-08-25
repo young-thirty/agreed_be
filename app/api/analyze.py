@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from app.auth import get_current_user
 from app.public_data import public_requirement
 from app.response import fail, ok
-from core.domain import Channel
+from core.domain import Channel, status_change
 from infra.ingest.paste import to_utterances
 from infra.llm.extract import extract_requirements
 from infra.llm.prompts import build_context_text
@@ -81,6 +81,11 @@ async def analyze(
             else existing_by_title.get(state.title)
         )
         if previous:
+            if previous.status != state.status:
+                previous.history = [
+                    *previous.history,
+                    status_change(previous.status, state.status, by_human=False),
+                ]
             previous.status = state.status
             previous.evidence = state.evidence
             previous.aiProposedDecision = state.aiProposedDecision
@@ -88,9 +93,10 @@ async def analyze(
             saved.append(previous)
         else:
             created = Requirement(
-                **state.model_dump(),
+                **state.model_dump(exclude={"history"}),
                 ownerId=current_user.id,
                 projectId=project.id,
+                history=[status_change(None, state.status, by_human=False)],
             )
             await created.insert()
             saved.append(created)

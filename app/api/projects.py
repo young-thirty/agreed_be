@@ -20,7 +20,7 @@ from app.integration_store import access_token, latest_gmail_connection, slack_c
 from app.public_data import public_material, public_project
 from app.response import fail, ok
 from core.contract_ops import apply_to_contract, diff_contract
-from core.domain import ContractState, Decision, RequirementStatus, Tone
+from core.domain import ContractState, Decision, RequirementStatus, Tone, status_change
 from core.project_data import (
     AiDecisionStatus, DocumentType, ProcessingStatus, ProjectSort, ProjectStatus,
     ResponseStatus, SourceChannel,
@@ -762,6 +762,22 @@ async def requirement_reply(
     return ok({"draft": draft})
 
 
+@router.get("/projects/{project_id}/requirements/{requirement_id}/allowed")
+async def allowed_project_requirement(
+    project_id: PydanticObjectId, requirement_id: PydanticObjectId,
+    current_user: User | None = Depends(get_current_user),
+):
+    """화면이 고를 수 있는 상태만 보여주게 하려고 둔다."""
+    project, error = await _project_or_404(project_id, current_user)
+    if error:
+        return error
+    requirement = await _project_requirement(project, requirement_id, current_user.id)
+    if requirement is None:
+        return fail("해당 요구사항을 찾을 수 없습니다.", 404)
+    from core.state_machine import TRANSITIONS
+    return ok({"allowed": list(TRANSITIONS[requirement.status])})
+
+
 @router.post("/projects/{project_id}/requirements/{requirement_id}/transition")
 async def transition_project_requirement(
     project_id: PydanticObjectId, requirement_id: PydanticObjectId, body: RequirementTransitionRequest,
@@ -775,9 +791,15 @@ async def transition_project_requirement(
         return fail("해당 요구사항을 찾을 수 없습니다.", 404)
     from core.state_machine import transition
     try:
-        requirement.status = transition(requirement.status, body.to)
+        next_status = transition(requirement.status, body.to)
     except ValueError as exc:
         return fail(str(exc))
+    # 사람이 확정한 변화다. 타임라인에서 AI가 옮긴 것과 구분해 그린다.
+    requirement.history = [
+        *requirement.history,
+        status_change(requirement.status, next_status, by_human=True),
+    ]
+    requirement.status = next_status
     if body.decision is not None:
         requirement.decision = body.decision
     await requirement.save()
