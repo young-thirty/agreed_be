@@ -52,17 +52,30 @@ async def build_reply(
     tone: str,
     questions: Sequence[str],
     intent: str | None = None,
+    decision: object | None = None,
 ) -> str:
     """고른 확인 질문·말투·사람이 정한 방향으로 답변 초안을 만든다.
 
     intent는 사람이 이 요구사항을 어떤 상태로 확정할지 정한 값이다. 무엇을
     말할지는 이 값이 정하고, 말투는 어떻게 말할지만 정한다.
+
+    decision은 사람이 채운 금액·납기다. 있으면 초안이 빈 자리 대신 이 값을 쓴다.
     """
     numbered = "\n".join(f"{order}. {text}" for order, text in enumerate(questions, start=1))
+    if decision is None:
+        settled = "없음"
+    else:
+        note = getattr(decision, "note", None)
+        settled = (
+            f"- 금액 변동: {getattr(decision, 'amountDelta', 0)}원\n"
+            f"- 납기: {getattr(decision, 'dueDate', '')}"
+            + (f"\n- 메모: {note}" if note else "")
+        )
     user = (
         f"{requirement_text}\n\n"
         f"## 말투\n{tone}\n\n"
         f"## 사람이 정한 방향\n{intent or '없음'}\n\n"
+        f"## 사람이 정한 금액·납기\n{settled}\n\n"
         f"## 담을 확인 질문\n{numbered or '없음'}"
     )
     result = await _ask(REPLY_SYSTEM_PROMPT, user, ReplyDraftResult)
