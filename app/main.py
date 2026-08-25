@@ -8,7 +8,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from pymongo import AsyncMongoClient
 
-from app.api import analyze, auth, contract, email, projects, requirements, slack
+from app.api import analyze, auth, contract, email, github, projects, requirements, slack
 from app.auth import SESSION_COOKIE_NAME
 from app.openapi import API_DESCRIPTION, OPENAPI_TAGS, configure_openapi
 from app.response import fail, ok
@@ -117,6 +117,7 @@ app.include_router(analyze.router, prefix="/api")
 app.include_router(contract.router, prefix="/api")
 app.include_router(projects.router, prefix="/api")
 app.include_router(email.router, prefix="/api")
+app.include_router(github.router, prefix="/api")
 app.include_router(requirements.router, prefix="/api")
 app.include_router(slack.router, prefix="/api")
 

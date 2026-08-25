@@ -22,15 +22,15 @@ class GitWorkspaceError(Exception):
     """사용자가 그대로 읽을 수 있는 문장만 담는다."""
 
 
-def _clone_url(repo_full_name: str) -> str:
-    token = os.environ.get("GITHUB_TOKEN", "")
+def _clone_url(repo_full_name: str, token: str | None) -> str:
+    token = token or os.environ.get("GITHUB_TOKEN", "")
     if token:
         return f"https://x-access-token:{token}@github.com/{repo_full_name}.git"
     return f"https://github.com/{repo_full_name}.git"
 
 
 @asynccontextmanager
-async def cloned_repo(repo_full_name: str) -> AsyncIterator[str]:
+async def cloned_repo(repo_full_name: str, token: str | None = None) -> AsyncIterator[str]:
     """``async with cloned_repo("owner/repo") as path:`` 형태로 쓴다.
 
     블록을 벗어나면(예외가 나도) 워크스페이스를 지운다.
@@ -39,7 +39,7 @@ async def cloned_repo(repo_full_name: str) -> AsyncIterator[str]:
     try:
         process = await asyncio.create_subprocess_exec(
             "git", "clone", "--depth", "1", "--quiet",
-            _clone_url(repo_full_name), workspace,
+            _clone_url(repo_full_name, token), workspace,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
         )

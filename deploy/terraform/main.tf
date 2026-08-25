@@ -50,6 +50,49 @@ resource "aws_secretsmanager_secret" "integration_token_key" {
   recovery_window_in_days = 0
 }
 
+# 사용자가 자기 PAT를 등록하지 않았을 때 쓰는 기본 토큰이다. 비워두면 공개
+# 저장소만 clone된다.
+resource "aws_secretsmanager_secret" "github_token" {
+  name                    = "${var.service_name}/github-token"
+  recovery_window_in_days = 0
+}
+
+# 채널에서 받은 원본 파일(ProjectMaterial.storageKey)을 둔다. 추출 텍스트만
+# Mongo에 남기고 바이트는 여기 있다.
+resource "aws_s3_bucket" "materials" {
+  bucket        = "${var.service_name}-materials-${data.aws_caller_identity.current.account_id}"
+  force_destroy = true
+
+  tags = {
+    Project = "agreed"
+    Stage   = "demo"
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "materials" {
+  bucket                  = aws_s3_bucket.materials.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+# 시연 뒤 정리 비용을 남기지 않도록 30일이면 스스로 지운다.
+resource "aws_s3_bucket_lifecycle_configuration" "materials" {
+  bucket = aws_s3_bucket.materials.id
+
+  rule {
+    id     = "expire-demo-objects"
+    status = "Enabled"
+
+    filter {}
+
+    expiration {
+      days = 30
+    }
+  }
+}
+
 resource "aws_iam_role" "apprunner_ecr_access" {
   name = "${var.service_name}-apprunner-ecr"
 
@@ -114,7 +157,12 @@ resource "aws_iam_role_policy" "apprunner_runtime" {
         aws_secretsmanager_secret.google_client_secret.arn,
         aws_secretsmanager_secret.slack_client_secret.arn,
         aws_secretsmanager_secret.integration_token_key.arn,
+        aws_secretsmanager_secret.github_token.arn,
       ]
+      }, {
+      Effect   = "Allow"
+      Action   = ["s3:PutObject", "s3:GetObject"]
+      Resource = "${aws_s3_bucket.materials.arn}/*"
     }]
   })
 }
@@ -156,12 +204,15 @@ resource "aws_apprunner_service" "api" {
           SESSION_COOKIE_SECURE   = tostring(var.session_cookie_secure)
           SESSION_COOKIE_SAMESITE = var.session_cookie_samesite
           DEMO_SESSION_ENABLED    = tostring(var.demo_session_enabled)
+          AWS_REGION              = var.aws_region
+          S3_BUCKET_NAME          = aws_s3_bucket.materials.bucket
         }
         runtime_environment_secrets = {
           DEEPSEEK_API_KEY      = aws_secretsmanager_secret.deepseek_api_key.arn
           GOOGLE_CLIENT_SECRET  = aws_secretsmanager_secret.google_client_secret.arn
           SLACK_CLIENT_SECRET   = aws_secretsmanager_secret.slack_client_secret.arn
           INTEGRATION_TOKEN_KEY = aws_secretsmanager_secret.integration_token_key.arn
+          GITHUB_TOKEN          = aws_secretsmanager_secret.github_token.arn
         }
       }
     }

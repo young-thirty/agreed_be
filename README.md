@@ -63,4 +63,5 @@ http://localhost:8000/api/slack/callback
 | [ARCHITECTURE.md](./ARCHITECTURE.md) | 기술 구조 |
 | [HANDOFF.md](./HANDOFF.md) | 현재 상태와 다음 작업 |
 | [DATA_AI_PIPELINE.md](./DATA_AI_PIPELINE.md) | 프로젝트·수집·AI·근거 설계 |
+| [AI_AGENTS.md](./AI_AGENTS.md) | 에이전트 구조·하네스·도구 |
 | [PRODUCT_API_DESIGN.md](./PRODUCT_API_DESIGN.md) | UNI 화면별 DTO·API·구현 순서 |

@@ -33,3 +33,11 @@ output "slack_secret_arn" {
 output "integration_key_secret_arn" {
   value = aws_secretsmanager_secret.integration_token_key.arn
 }
+
+output "github_token_secret_arn" {
+  value = aws_secretsmanager_secret.github_token.arn
+}
+
+output "materials_bucket" {
+  value = aws_s3_bucket.materials.bucket
+}

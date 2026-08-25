@@ -111,6 +111,53 @@ async def slack_connections(owner_id: str) -> list[IntegrationConnection]:
     ).to_list()
 
 
+async def save_github_connection(
+    *,
+    owner_id: str,
+    account_name: str,
+    personal_access_token: str,
+) -> IntegrationConnection:
+    """사용자의 GitHub PAT를 암호화해 저장한다.
+
+    Gmail·Slack과 달리 OAuth를 거치지 않는다. 시연 범위에서는 OAuth App을 새로
+    등록하는 비용이 크고, 어차피 저장·사용 방식(Fernet 암호화 후 서버에서만 복호화)은
+    똑같기 때문이다. 사람마다 접근 권한이 다른 저장소를 봐야 하므로 서버 공용
+    토큰 하나로는 안 되고, 사용자별로 묶여야 한다.
+    """
+    connection = await IntegrationConnection.find_one(
+        IntegrationConnection.ownerId == owner_id,
+        IntegrationConnection.provider == "github",
+        IntegrationConnection.externalId == account_name,
+    )
+    encrypted = encrypt_provider_token(personal_access_token)
+    if connection is None:
+        connection = IntegrationConnection(
+            ownerId=owner_id,
+            provider="github",
+            externalId=account_name,
+            externalName=account_name,
+            accessTokenEncrypted=encrypted,
+        )
+        await connection.insert()
+        return connection
+
+    connection.accessTokenEncrypted = encrypted
+    connection.updatedAt = utc_now()
+    await connection.save()
+    return connection
+
+
+async def github_connection(owner_id: str) -> IntegrationConnection | None:
+    return (
+        await IntegrationConnection.find(
+            IntegrationConnection.ownerId == owner_id,
+            IntegrationConnection.provider == "github",
+        )
+        .sort(-IntegrationConnection.updatedAt)
+        .first_or_none()
+    )
+
+
 def access_token(connection: IntegrationConnection) -> str:
     return decrypt_provider_token(connection.accessTokenEncrypted)
 
