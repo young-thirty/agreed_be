@@ -4,7 +4,7 @@ from beanie import Document, PydanticObjectId
 from pydantic import Field
 from pymongo import ASCENDING, DESCENDING, IndexModel
 
-from core.project_data import ProjectStatus
+from core.project_data import DevelopmentStatus, ProjectStatus
 
 
 def utc_now() -> datetime:
@@ -23,6 +23,7 @@ class Project(Document):
     contractPrice: int | None = Field(default=None, ge=0)
     status: ProjectStatus = "DRAFT"
     statusRank: int = 1
+    development: DevelopmentStatus | None = None
     createdAt: datetime = Field(default_factory=utc_now)
     updatedAt: datetime = Field(default_factory=utc_now)
 

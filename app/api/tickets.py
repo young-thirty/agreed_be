@@ -11,7 +11,9 @@ from app.auth import get_current_user
 from app.public_data import public_material, public_project
 from app.response import fail, ok
 from core.project_data import TicketCategory, TicketHandling
-from models import ClientRequest, Project, ProjectMaterial, SourceMessage, TicketDecision
+from models import (
+    ClientRequest, Project, ProjectMaterial, ProjectSourceLink, SourceMessage, TicketDecision,
+)
 from models.client_request import ticket_code
 from models.user import User
 
@@ -112,19 +114,49 @@ def _decision_payload(decision: TicketDecision | None) -> dict[str, Any]:
     }
 
 
-def _analysis_payload(ticket: ClientRequest, decision: TicketDecision | None) -> dict[str, Any]:
-    fields: list[dict[str, Any]] = []
-    if ticket.aiDecisionStatus:
-        decision_label = {
-            "IN_SCOPE_ACTION_REQUIRED": "계약 범위 안",
-            "OUT_OF_SCOPE_COORDINATION_REQUIRED": "확인·조율 필요",
-            "EXTRA_REQUEST": "계약 범위 밖",
-        }[ticket.aiDecisionStatus]
-        fields.append({"label": "계약 판단", "value": decision_label,
-                       "tone": "neutral" if ticket.aiDecisionStatus == "IN_SCOPE_ACTION_REQUIRED" else "caution"})
-    if ticket.decisionReason:
-        fields.append({"label": "판단 근거", "value": ticket.decisionReason})
+def _missing_info(ticket: ClientRequest) -> list[str]:
+    if ticket.solution and ticket.solution.feasibility:
+        return ticket.solution.feasibility.requiredHumanInput
+    return ["추가 비용", "완료 예정일"] if ticket.aiDecisionStatus == "EXTRA_REQUEST" else []
 
+
+def _analysis_payload(
+    ticket: ClientRequest,
+    decision: TicketDecision | None,
+    *,
+    siblings: list[ClientRequest] | None = None,
+    repo_full_name: str | None = None,
+    related_tickets: list[ClientRequest] | None = None,
+) -> dict[str, Any]:
+    solution = ticket.solution
+    scope_label = {
+        "IN_SCOPE_ACTION_REQUIRED": "기존 계약 범위 안에서 처리할 수 있습니다",
+        "OUT_OF_SCOPE_COORDINATION_REQUIRED": "범위가 애매해 확인이 필요합니다",
+        "EXTRA_REQUEST": "기존 계약 범위 밖일 가능성이 높습니다",
+    }.get(ticket.aiDecisionStatus or "", "확인하지 못했습니다")
+    scope_tone = "neutral" if ticket.aiDecisionStatus == "IN_SCOPE_ACTION_REQUIRED" else "caution"
+    development_items: list[str] = []
+    if solution and solution.developmentStatus:
+        development_items = [
+            value for value in (
+                solution.developmentStatus.currentState,
+                *(f"관련 파일: {path}" for path in solution.developmentStatus.relatedPaths[:3]),
+            ) if value
+        ]
+    impact_items: list[str] = []
+    if solution and solution.impactAnalysis:
+        impact_items = [
+            value for value in (
+                solution.impactAnalysis.existingFeatureImpact,
+                *(f"테스트: {scope}" for scope in solution.impactAnalysis.testScope[:3]),
+            ) if value
+        ]
+    fields = [
+        {"label": "범위", "value": scope_label, "tone": scope_tone},
+        {"label": "개발", "items": development_items or ["확인하지 못했습니다."]},
+        {"label": "일정", "items": impact_items or ["확인하지 못했습니다."], "tone": "caution"},
+        {"label": "사용자 판단 필요", "items": _missing_info(ticket) or ["없음"]},
+    ]
     evidence = [
         {"source": "message", "label": "고객 메시지", "title": "요청 원문", "quote": item.quote}
         for item in ticket.requestEvidence
@@ -133,7 +165,22 @@ def _analysis_payload(ticket: ClientRequest, decision: TicketDecision | None) ->
         {"source": "document", "label": "프로젝트 자료", "title": item.documentId, "quote": item.quote}
         for item in ticket.documentEvidence
     )
+    evidence.extend(
+        {"source": "ticket", "label": "관련 Ticket", "title": f"{ticket_code(item)} {item.summaryTitle or ''}".strip(),
+         "quote": item.requirement or item.currentSummary or "", "ticketId": str(item.id)}
+        for item in (related_tickets or [])
+    )
+    if solution and solution.developmentStatus:
+        status = solution.developmentStatus
+        if status.relatedPaths:
+            evidence.append({
+                "source": "github", "label": "GitHub",
+                "title": f"{repo_full_name or '저장소'} · {', '.join(status.relatedPaths[:3])}",
+                "quote": status.currentState,
+            })
     drafts = {"base": "", "friendly": "", "short": "", "firm": ""}
+    if solution and solution.replyDraft:
+        drafts["base"] = solution.replyDraft
     if decision:
         drafts.update({key: value for key, value in decision.drafts.items() if key in drafts})
     decision_fields = []
@@ -143,11 +190,23 @@ def _analysis_payload(ticket: ClientRequest, decision: TicketDecision | None) ->
             {"id": "dueDate", "label": "완료 예정일", "type": "date"},
         ]
     return {
-        "headline": ticket.currentSummary or ticket.decisionReason or ticket.summaryTitle or "요청을 확인해 주세요.",
-        "intents": [],
+        "headline": solution.adviceMessage if solution else (ticket.currentSummary or ticket.decisionReason or ticket.summaryTitle or "요청을 확인해 주세요."),
+        "adviceReason": solution.adviceReason if solution else "",
+        "intents": [
+            {"kind": item.category, "text": item.summaryTitle or "제목 없는 요청"}
+            for item in (siblings or [ticket])
+        ],
         "fields": fields,
-        "missingInfo": [],
-        "devContext": None,
+        "missingInfo": _missing_info(ticket),
+        "devContext": ({
+            "subject": solution.developmentStatus.targetFeature or ticket.summaryTitle or "개발 현황",
+            "items": [{"state": "progress", "text": text} for text in development_items],
+            "relatedWork": [{"title": ref, "note": "GitHub 근거"} for ref in (solution.developmentStatus.relatedRefs if solution and solution.developmentStatus else [])],
+            "impactAreas": solution.impactAnalysis.codeAreas if solution and solution.impactAnalysis else [],
+            "repoFullName": repo_full_name,
+            "checked": solution is not None and solution.developmentStatus is not None,
+        } if repo_full_name else None),
+        "feasibility": solution.feasibility.model_dump(mode="json") if solution and solution.feasibility else None,
         "evidence": evidence,
         "relatedTicketId": str(ticket.id),
         "ticketProposal": {
@@ -163,6 +222,10 @@ def _analysis_payload(ticket: ClientRequest, decision: TicketDecision | None) ->
 
 def _inbound_payload(
     message: SourceMessage, ticket: ClientRequest, decision: TicketDecision | None,
+    *,
+    siblings: list[ClientRequest] | None = None,
+    repo_full_name: str | None = None,
+    related_tickets: list[ClientRequest] | None = None,
 ) -> dict[str, Any]:
     body = message.rawText.strip()
     preview = next((line.strip() for line in body.splitlines() if line.strip()), body)[:160]
@@ -181,7 +244,10 @@ def _inbound_payload(
         "createdAt": _iso(message.occurredAt),
         "initialStage": "to_analyze" if ticket.aiProcessingStatus != "COMPLETED" else "to_reply",
         "category": ticket.category,
-        "analysis": _analysis_payload(ticket, decision),
+        "analysis": _analysis_payload(
+            ticket, decision, siblings=siblings, repo_full_name=repo_full_name,
+            related_tickets=related_tickets,
+        ),
     }
 
 
@@ -233,6 +299,21 @@ async def _work_item(
     ticket: ClientRequest, owner_id: PydanticObjectId, decisions: list[TicketDecision],
 ) -> dict[str, Any]:
     messages = await _routed_messages(ticket, owner_id, decisions)
+    siblings = await ClientRequest.find(
+        ClientRequest.ownerId == owner_id,
+        ClientRequest.projectId == ticket.projectId,
+        ClientRequest.sourceMessageId == ticket.sourceMessageId,
+    ).sort(ClientRequest.requestOrdinal).to_list()
+    github_link = await ProjectSourceLink.find_one(
+        ProjectSourceLink.ownerId == owner_id,
+        ProjectSourceLink.projectId == ticket.projectId,
+        ProjectSourceLink.sourceChannel == "GITHUB",
+    )
+    related = await ClientRequest.find(
+        ClientRequest.ownerId == owner_id,
+        ClientRequest.projectId == ticket.projectId,
+        ClientRequest.id != ticket.id,
+    ).sort(-ClientRequest.updatedAt).limit(3).to_list()
     received = [item for item in messages if item.direction == "RECEIVED"]
     last_message = received[-1] if received else None
     pending_message = next((
@@ -252,7 +333,11 @@ async def _work_item(
     activity_dates = [ticket.updatedAt, *[item.occurredAt for item in messages]]
     return {
         "ticket": _ticket_payload(ticket, last_message),
-        "pending": _inbound_payload(pending_message, ticket, pending_decision) if pending_message else None,
+        "pending": _inbound_payload(
+            pending_message, ticket, pending_decision,
+            siblings=siblings, repo_full_name=github_link.repoFullName if github_link else None,
+            related_tickets=related,
+        ) if pending_message else None,
         "lastActivityAt": _iso(max(activity_dates)),
         "workStage": stage,
     }

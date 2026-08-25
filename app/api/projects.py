@@ -29,7 +29,7 @@ from core.channel_data import RawEmail
 from core.contract_ops import apply_to_contract, diff_contract
 from core.domain import ContractState
 from core.project_data import (
-    DocumentType, ProcessingStatus, ProjectSort, ProjectStatus,
+    DevelopmentStatus, DocumentType, ProcessingStatus, ProjectSort, ProjectStatus,
     RelatedFile, SourceChannel, TicketCategory, TicketSolution, TicketStatus,
 )
 from infra.integrations import IntegrationError
@@ -41,6 +41,7 @@ from infra.llm.client import EXTRACT_MODEL
 from infra.llm.materials import classify_project_material
 from infra.llm.orchestrator import AnalyzedRequest, analyze_request_message
 from infra.llm.subagents.checklist import build_checklist
+from infra.llm.subagents.dev_status import build_development_status
 from infra.llm.subagents.git_explore import ask_repository
 from infra.llm.subagents.reply_draft import build_reply_draft
 from infra.llm.solution import build_solution
@@ -50,7 +51,7 @@ from models import (
     AnalysisRun, ClientRequest, Contract, Project, ProjectMaterial,
     ProjectSourceLink, Requirement, SourceMessage, TicketDecision,
 )
-from models.client_request import public_client_request
+from models.client_request import public_client_request, ticket_code
 from models.integration import IntegrationConnection
 from models.user import User
 
@@ -302,6 +303,81 @@ async def request_detail(request_id: PydanticObjectId, current_user: User | None
         "conversationDisplay": message.conversationDisplay if message else None,
     })
     return ok(data)
+
+
+@router.get("/projects/{project_id}/messages", tags=["project"])
+async def project_messages(
+    project_id: PydanticObjectId,
+    current_user: User | None = Depends(get_current_user),
+):
+    """프로젝트 화면의 고객 메시지 목록을 DB 기준으로 반환한다."""
+    project, error = await _project_or_404(project_id, current_user)
+    if error:
+        return error
+    messages = await SourceMessage.find(
+        SourceMessage.ownerId == current_user.id,
+        SourceMessage.projectId == project.id,
+        SourceMessage.direction == "RECEIVED",
+    ).sort(-SourceMessage.occurredAt).to_list()
+    tickets = await ClientRequest.find(
+        ClientRequest.ownerId == current_user.id,
+        ClientRequest.projectId == project.id,
+    ).sort(ClientRequest.requestOrdinal).to_list()
+    decisions = await TicketDecision.find(
+        TicketDecision.ownerId == current_user.id,
+        TicketDecision.projectId == project.id,
+    ).to_list()
+    by_message: dict[PydanticObjectId, ClientRequest] = {}
+    for ticket in tickets:
+        by_message.setdefault(ticket.sourceMessageId, ticket)
+    sent_ids = {item.sourceMessageId for item in decisions if item.sentAt is not None}
+    return ok([
+        {
+            "messageId": str(message.id),
+            "channel": "slack" if message.sourceChannel == "SLACK" else "email",
+            "fromName": message.senderDisplay or "",
+            "fromAddress": message.senderExternalId if "@" in (message.senderExternalId or "") else "",
+            "subject": message.conversationDisplay or "",
+            "body": message.rawText.strip(),
+            "occurredAt": message.occurredAt.isoformat() + ("Z" if message.occurredAt.tzinfo is None else ""),
+            "replyState": "sent" if message.id in sent_ids else "needs_reply",
+            "ticketId": str(by_message[message.id].id) if message.id in by_message else None,
+            "ticketCode": ticket_code(by_message[message.id]) if message.id in by_message else None,
+            "category": by_message[message.id].category if message.id in by_message else None,
+        }
+        for message in messages
+    ])
+
+
+@router.get("/projects/{project_id}/context", tags=["project"])
+async def project_context(
+    project_id: PydanticObjectId,
+    refresh: bool = False,
+    current_user: User | None = Depends(get_current_user),
+):
+    """프로젝트 자료와 읽기 전용 GitHub 개발 현황을 함께 반환한다."""
+    project, error = await _project_or_404(project_id, current_user)
+    if error:
+        return error
+    materials = await ProjectMaterial.find(
+        ProjectMaterial.ownerId == current_user.id,
+        ProjectMaterial.projectId == project.id,
+    ).sort(-ProjectMaterial.communicatedAt).to_list()
+    if project.development is None or refresh:
+        development = await build_development_status(
+            owner_id=current_user.id,
+            project_id=project.id,
+            summary_title=project.name,
+            requirement=project.description,
+        )
+        if development is not None:
+            project.development = development
+            project.updatedAt = _now()
+            await project.save()
+    return ok({
+        "documents": [public_material(item) for item in materials],
+        "development": project.development.model_dump(mode="json") if project.development else None,
+    })
 
 
 class ReplyDraftRequest(BaseModel):
