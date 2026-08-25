@@ -52,6 +52,8 @@ jobs:
       - name: Build container
         run: docker build --platform linux/amd64 --tag agreed-be:ci .
 
+      - uses: hashicorp/setup-terraform@v3
+
       - name: Validate Terraform
         working-directory: deploy/terraform
         run: |
