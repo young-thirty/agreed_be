@@ -26,6 +26,7 @@ from core.channel_data import group_gmail_by_company
 from infra.integrations import IntegrationError
 from infra.integrations.gmail import (
     GMAIL_SCOPES,
+    GmailAuthError,
     build_auth_url,
     exchange_code,
     fetch_my_address,
@@ -33,6 +34,7 @@ from infra.integrations.gmail import (
     refresh_access_token,
 )
 from infra.security.provider_tokens import TokenEncryptionError
+from models.integration import IntegrationConnection
 from models.user import User
 
 router = APIRouter(prefix="/email", tags=["email"])
@@ -40,6 +42,11 @@ router = APIRouter(prefix="/email", tags=["email"])
 
 class EmailMessagesRequest(BaseModel):
     maxMessages: int = Field(default=20, ge=1, le=100)
+    counterpartyEmail: str | None = Field(
+        default=None,
+        max_length=320,
+        pattern=r"^[^\s@]+@[^\s@]+$",
+    )
 
 
 def _google_config() -> tuple[str, str, str]:
@@ -60,17 +67,65 @@ def _expires_at(epoch_milliseconds: int) -> datetime:
     return datetime.utcfromtimestamp(epoch_milliseconds / 1000)
 
 
+async def _fresh_token(
+    owner_id: str,
+    connection: IntegrationConnection,
+) -> tuple[IntegrationConnection, str]:
+    """만료가 임박했으면 갱신한 access token을 돌려준다.
+
+    갱신에 실패하면 재연동 말고는 방법이 없는 상태이므로 GmailAuthError로 올린다.
+    호출부가 '다시 연결해 주세요'와 '잠시 후 다시 시도해 주세요'를 구분할 수 있어야 한다.
+    """
+    expires_at = connection.accessTokenExpiresAt
+    if expires_at is not None and expires_at > utc_now() + timedelta(minutes=1):
+        return connection, access_token(connection)
+
+    stored_refresh_token = refresh_token(connection)
+    if stored_refresh_token is None:
+        raise GmailAuthError("Gmail 연결이 만료되었습니다.")
+
+    client_id, client_secret, _ = _google_config()
+    try:
+        refreshed = await refresh_access_token(
+            refresh_token=stored_refresh_token,
+            client_id=client_id,
+            client_secret=client_secret,
+        )
+    except IntegrationError as error:
+        raise GmailAuthError("Gmail 연결이 만료되었습니다.") from error
+
+    connection = await save_gmail_connection(
+        owner_id=owner_id,
+        email=connection.externalId,
+        access_token=refreshed.accessToken,
+        refresh_token=refreshed.refreshToken,
+        expires_at=_expires_at(refreshed.expiresAt),
+        scopes=connection.scopes,
+    )
+    return connection, access_token(connection)
+
+
 @router.get("/status")
 async def gmail_status(current_user: User | None = Depends(get_current_user)):
     if current_user is None:
         return fail("로그인이 필요합니다.", 401)
     connection = await latest_gmail_connection(str(current_user.id))
-    return ok(
-        {
-            "connected": connection is not None,
-            "email": connection.externalId if connection else None,
-        }
-    )
+    if connection is None:
+        return ok({"connected": False, "email": None})
+
+    # 연결 문서가 있다는 것과 지금 메일을 읽을 수 있다는 것은 다르다.
+    # 배지는 초록인데 조회는 실패하는 상황을 없애려고 실제로 한 번 물어본다.
+    connected = True
+    try:
+        connection, token = await _fresh_token(str(current_user.id), connection)
+        await fetch_my_address(access_token=token)
+    except (GmailAuthError, TokenEncryptionError):
+        connected = False
+    except (IntegrationError, RuntimeError, ValueError):
+        # Google이 잠깐 응답하지 않는 경우다. 연결이 끊긴 것으로 보지 않는다.
+        pass
+
+    return ok({"connected": connected, "email": connection.externalId})
 
 
 @router.get("/connect")
@@ -162,35 +217,18 @@ async def gmail_messages(
         return fail("Gmail이 연결되어 있지 않습니다. 먼저 Gmail을 연결해 주세요.")
 
     try:
-        token = access_token(connection)
-        expires_at = connection.accessTokenExpiresAt
-        if expires_at is None or expires_at <= utc_now() + timedelta(minutes=1):
-            stored_refresh_token = refresh_token(connection)
-            if stored_refresh_token is None:
-                return fail("Gmail 연결이 만료되었습니다. Gmail을 다시 연결해 주세요.")
-            client_id, client_secret, _ = _google_config()
-            refreshed = await refresh_access_token(
-                refresh_token=stored_refresh_token,
-                client_id=client_id,
-                client_secret=client_secret,
-            )
-            connection = await save_gmail_connection(
-                owner_id=owner_id,
-                email=connection.externalId,
-                access_token=refreshed.accessToken,
-                refresh_token=refreshed.refreshToken,
-                expires_at=_expires_at(refreshed.expiresAt),
-                scopes=connection.scopes,
-            )
-            token = access_token(connection)
-
+        connection, token = await _fresh_token(owner_id, connection)
         emails = await fetch_recent(
             access_token=token,
             max_messages=body.maxMessages,
+            counterparty=body.counterpartyEmail,
         )
-        return ok(group_gmail_by_company(emails, [connection.externalId]))
-    except (IntegrationError, RuntimeError, TokenEncryptionError, ValueError):
+    except (GmailAuthError, TokenEncryptionError):
+        return fail("Gmail 연결이 끊어졌습니다. Gmail을 다시 연결해 주세요.")
+    except (IntegrationError, RuntimeError, ValueError):
         return fail(
-            "Gmail에서 메일을 가져오지 못했습니다. Gmail을 다시 연결해 주세요.",
+            "지금 Gmail에서 메일을 가져오지 못했습니다. 잠시 후 다시 시도해 주세요.",
             502,
         )
+
+    return ok(group_gmail_by_company(emails, [connection.externalId]))
