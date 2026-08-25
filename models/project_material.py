@@ -4,7 +4,9 @@ from beanie import Document, PydanticObjectId
 from pydantic import Field
 from pymongo import ASCENDING, DESCENDING, IndexModel
 
-from core.project_data import Direction, DocumentType, MaterialOrigin, ProcessingStatus
+from core.project_data import (
+    Direction, DocumentType, MaterialOrigin, ProcessingStatus, SourceChannel,
+)
 
 
 def utc_now() -> datetime:
@@ -15,6 +17,9 @@ class ProjectMaterial(Document):
     ownerId: PydanticObjectId
     projectId: PydanticObjectId
     origin: MaterialOrigin = "CHANNEL"
+    # 이 값이 있어야 아카이브 화면이 채널 아이콘을 join 없이 바로 그린다.
+    # 기존 자료(이 필드가 생기기 전에 만든 것)는 None일 수 있다.
+    sourceChannel: SourceChannel | None = None
     sourceMessageId: PydanticObjectId | None = None
     connectionId: str | None = None
     providerFileId: str | None = None

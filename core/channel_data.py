@@ -10,6 +10,15 @@ class EmailAddress(BaseModel):
     address: str
 
 
+class EmailAttachment(BaseModel):
+    """첨부 메타데이터만 담는다. 본문 바이트는 필요할 때(동기화 시점)만 따로 내려받는다."""
+
+    id: str
+    filename: str
+    mimeType: str
+    sizeBytes: int
+
+
 class RawEmail(BaseModel):
     id: str
     threadId: str
@@ -19,6 +28,7 @@ class RawEmail(BaseModel):
     cc: list[EmailAddress]
     subject: str
     body: str
+    attachments: list[EmailAttachment] = Field(default_factory=list)
 
     model_config = ConfigDict(populate_by_name=True, serialize_by_alias=True)
 

@@ -62,4 +62,9 @@ def public_material(material: ProjectMaterial) -> dict[str, object]:
         "communicatedAt": material.communicatedAt.isoformat() + ("Z" if material.communicatedAt.tzinfo is None else ""),
         "classificationStatus": material.classificationStatus,
         "documentType": material.documentType,
+        "sourceChannel": material.sourceChannel,
+        "mimeType": material.mimeType,
+        "sizeBytes": material.sizeBytes,
+        # 원본이 S3에 있어야 다운로드할 수 있다. 화면이 이 값으로 링크를 보여줄지 정한다.
+        "hasFile": material.storageKey is not None,
     }

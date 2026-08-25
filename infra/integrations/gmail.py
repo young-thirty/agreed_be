@@ -5,6 +5,7 @@ import base64
 import binascii
 import re
 import time
+from dataclasses import dataclass
 from email.utils import getaddresses
 from typing import Any
 from urllib.parse import urlencode
@@ -12,7 +13,7 @@ from urllib.parse import urlencode
 import httpx
 from pydantic import BaseModel
 
-from core.channel_data import EmailAddress, RawEmail
+from core.channel_data import EmailAddress, EmailAttachment, RawEmail
 from infra.integrations import IntegrationError, create_http_client
 
 GMAIL_API_BASE_URL = "https://gmail.googleapis.com/gmail/v1/users/me"
@@ -201,6 +202,45 @@ def _decode_base64url(data: str) -> str:
         return ""
 
 
+def _decode_base64url_bytes(data: str) -> bytes:
+    """첨부는 텍스트가 아닐 수 있어 문자열로 디코드하지 않는다."""
+    padded = data + "=" * (-len(data) % 4)
+    try:
+        return base64.urlsafe_b64decode(padded)
+    except (ValueError, binascii.Error) as error:
+        raise IntegrationError("Gmail 첨부 데이터를 읽지 못했습니다.") from error
+
+
+def _find_attachments(part: dict[str, Any]) -> list[EmailAttachment]:
+    """MIME 트리에서 첨부 파트만 뽑는다.
+
+    본문 파트는 filename이 없고 body.attachmentId도 없다. 첨부는 파일 이름과
+    attachmentId가 함께 있는 파트다 — mimeType은 이미지든 문서든 상관없다.
+    """
+    found: list[EmailAttachment] = []
+    filename = part.get("filename")
+    body = part.get("body")
+    if isinstance(filename, str) and filename and isinstance(body, dict):
+        attachment_id = body.get("attachmentId")
+        if isinstance(attachment_id, str):
+            size = body.get("size")
+            found.append(
+                EmailAttachment(
+                    id=attachment_id,
+                    filename=filename,
+                    mimeType=str(part.get("mimeType") or "application/octet-stream"),
+                    sizeBytes=size if isinstance(size, int) else 0,
+                )
+            )
+
+    children = part.get("parts")
+    if isinstance(children, list):
+        for child in children:
+            if isinstance(child, dict):
+                found.extend(_find_attachments(child))
+    return found
+
+
 def _find_part(part: dict[str, Any], mime_type: str) -> str:
     if part.get("mimeType") == mime_type:
         body = part.get("body")
@@ -248,6 +288,7 @@ def _to_raw_email(message: dict[str, Any]) -> RawEmail:
 
     from_addresses = _parse_addresses(_header(message, "From"))
     snippet = message.get("snippet")
+    payload = message.get("payload")
     return RawEmail(
         id=message_id,
         threadId=thread_id,
@@ -257,6 +298,7 @@ def _to_raw_email(message: dict[str, Any]) -> RawEmail:
         cc=_parse_addresses(_header(message, "Cc")),
         subject=_header(message, "Subject"),
         body=_extract_body(message) or (snippet if isinstance(snippet, str) else ""),
+        attachments=_find_attachments(payload) if isinstance(payload, dict) else [],
     )
 
 
@@ -324,3 +366,39 @@ async def fetch_recent(
     if not messages:
         raise IntegrationError("Gmail에서 메일 본문을 가져오지 못했습니다.")
     return [_to_raw_email(message) for message in messages]
+
+
+@dataclass(frozen=True, slots=True)
+class DownloadedGmailAttachment:
+    attachmentId: str
+    fileName: str
+    contentType: str
+    content: bytes
+
+
+async def fetch_attachment(
+    *,
+    access_token: str,
+    message_id: str,
+    attachment_id: str,
+    file_name: str,
+    mime_type: str,
+) -> DownloadedGmailAttachment:
+    """첨부 하나의 실제 바이트를 내려받는다. 목록 조회 때는 부르지 않는다.
+
+    messages.attachments.get은 메시지 안의 파일 이름·MIME 타입을 돌려주지
+    않는다. 목록 단계(_find_attachments)에서 이미 알고 있으므로 그대로 받는다.
+    """
+    async with create_http_client() as client:
+        payload = await _gmail_get(
+            client, f"messages/{message_id}/attachments/{attachment_id}", access_token
+        )
+    data = payload.get("data")
+    if not isinstance(data, str):
+        raise IntegrationError("Gmail 첨부 응답 형식이 올바르지 않습니다.")
+    return DownloadedGmailAttachment(
+        attachmentId=attachment_id,
+        fileName=file_name,
+        contentType=mime_type,
+        content=_decode_base64url_bytes(data),
+    )
