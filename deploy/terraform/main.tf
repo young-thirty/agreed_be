@@ -237,8 +237,11 @@ resource "aws_iam_role_policy" "github_actions" {
       Action   = "ecr:GetAuthorizationToken"
       Resource = "*"
       }, {
-      Effect   = "Allow"
-      Action   = "apprunner:StartDeployment"
+      Effect = "Allow"
+      Action = [
+        "apprunner:DescribeService",
+        "apprunner:StartDeployment",
+      ]
       Resource = aws_apprunner_service.api.arn
     }]
   })
