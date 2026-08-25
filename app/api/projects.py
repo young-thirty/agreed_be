@@ -25,7 +25,7 @@ from core.contract_ops import apply_to_contract, diff_contract
 from core.domain import ContractState
 from core.project_data import (
     DocumentType, ProcessingStatus, ProjectSort, ProjectStatus,
-    ResponseStatus, SourceChannel,
+    RelatedFile, SourceChannel, TicketSolution, TicketStatus,
 )
 from infra.integrations import IntegrationError
 from infra.integrations.gmail import (
@@ -38,6 +38,7 @@ from infra.llm.orchestrator import AnalyzedRequest, analyze_request_message
 from infra.llm.subagents.checklist import build_checklist
 from infra.llm.subagents.git_explore import ask_repository
 from infra.llm.subagents.reply_draft import build_reply_draft
+from infra.llm.subagents.ticket_advice import build_ticket_advice
 from infra.llm.prompts import PROJECT_MATERIAL_SYSTEM_PROMPT
 from infra.llm.schemas import MaterialClassificationResult
 from infra.security.provider_tokens import TokenEncryptionError
@@ -135,7 +136,7 @@ async def _unanswered_count(project_id: PydanticObjectId, owner_id: PydanticObje
     return await ClientRequest.find(
         ClientRequest.ownerId == owner_id,
         ClientRequest.projectId == project_id,
-        ClientRequest.responseStatus == "WAITING",
+        ClientRequest.ticketStatus == "active",
     ).count()
 
 
@@ -255,6 +256,7 @@ async def request_detail(request_id: PydanticObjectId, current_user: User | None
         # decisionReason은 PRODUCT_API_DESIGN.md의 확정 공개 DTO에는 없지만,
         # 이 endpoint 자체가 이미 그 DTO를 넘어선 상세 화면용이라 함께 둔다.
         "decisionReason": item.decisionReason,
+        "solution": item.solution.model_dump(mode="json") if item.solution else None,
         "sourceText": message.rawText if message else None,
         "conversationDisplay": message.conversationDisplay if message else None,
     })
@@ -266,14 +268,75 @@ class ReplyDraftRequest(BaseModel):
     tone: Literal["friendly", "professional", "concise", "firm"] = "professional"
 
 
-class ResponseStatusRequest(BaseModel):
-    responseStatus: ResponseStatus
+class TicketStatusRequest(BaseModel):
+    ticketStatus: TicketStatus
 
 
 async def _owned_request(request_id: PydanticObjectId, owner_id: PydanticObjectId) -> ClientRequest | None:
     return await ClientRequest.find_one(
         ClientRequest.id == request_id, ClientRequest.ownerId == owner_id
     )
+
+
+@router.post("/requests/{request_id}/solution", tags=["request"])
+async def ticket_solution(
+    request_id: PydanticObjectId,
+    refresh: bool = False,
+    current_user: User | None = Depends(get_current_user),
+):
+    """티켓 하나의 솔루션 패키지를 만든다. 조언·이유·근거 조문·관련 파일이다.
+
+    한 번 만들면 저장하고 다음부터는 그대로 돌려준다. 조언과 근거는 티켓이
+    바뀌지 않는 한 달라질 이유가 없어서, 화면에 들어올 때마다 다시 만들면
+    토큰만 쓴다. 다시 만들려면 refresh=true를 준다.
+
+    답변 초안은 여기 없다. 말투마다 따로 만드는 값이라 /reply-draft가 맡는다.
+    """
+    if current_user is None:
+        return fail("로그인이 필요합니다.", 401)
+    item = await _owned_request(request_id, current_user.id)
+    if item is None:
+        return fail("요청을 찾을 수 없습니다.", 404)
+    if item.solution is not None and not refresh:
+        return ok(item.solution.model_dump(mode="json"))
+
+    advice = await build_ticket_advice(
+        owner_id=item.ownerId,
+        project_id=item.projectId,
+        summary_title=item.summaryTitle or "제목 없는 요청",
+        decision=item.aiDecisionStatus or "판정 없음",
+        request_quote=item.requestEvidence[0].quote if item.requestEvidence else "",
+    )
+
+    # 관련 파일은 AI에게 고르게 하지 않는다. 이 프로젝트에 어떤 자료가 있는지는
+    # DB가 아는 사실이라 추론할 대상이 아니다.
+    materials = (
+        await ProjectMaterial.find(
+            ProjectMaterial.ownerId == item.ownerId,
+            ProjectMaterial.projectId == item.projectId,
+        )
+        .sort(-ProjectMaterial.communicatedAt)
+        .limit(5)
+        .to_list()
+    )
+    item.solution = TicketSolution(
+        adviceMessage=advice.adviceMessage,
+        adviceReason=advice.adviceReason,
+        basisQuote=advice.basisQuote,
+        basisDocumentId=advice.basisDocumentId,
+        relatedFiles=[
+            RelatedFile(
+                materialId=str(material.id),
+                fileName=material.fileName,
+                documentType=material.documentType,
+            )
+            for material in materials
+        ],
+        generatedAt=_now(),
+    )
+    item.updatedAt = _now()
+    await item.save()
+    return ok(item.solution.model_dump(mode="json"))
 
 
 @router.post("/requests/{request_id}/checklist", tags=["request"])
@@ -320,23 +383,24 @@ async def request_reply_draft(
     return ok({"body": reply})
 
 
-@router.patch("/requests/{request_id}/response-status", tags=["request"])
-async def update_response_status(
+@router.patch("/requests/{request_id}/ticket-status", tags=["request"])
+async def update_ticket_status(
     request_id: PydanticObjectId,
-    body: ResponseStatusRequest,
+    body: TicketStatusRequest,
     current_user: User | None = Depends(get_current_user),
 ):
-    """사람이 대응 상태를 바꾼다. AI는 관여하지 않는다.
+    """사람이 티켓 상태를 바꾼다. AI는 관여하지도, 제안하지도 않는다.
 
-    WAITING에서 나갈 경로가 없어 unansweredRequestCount가 줄어들 방법이
-    없었다. 이 경로가 그 유일한 출구다.
+    대응이 끝났는지는 대화 밖에서 일어나는 일이라 메시지만 보고 알 수 없다.
+    자동화하면 열려 있어야 할 티켓이 닫히고, 그게 곧 놓친 요청이 된다.
+    active에서 나가는 유일한 경로다.
     """
     if current_user is None:
         return fail("로그인이 필요합니다.", 401)
     item = await _owned_request(request_id, current_user.id)
     if item is None:
         return fail("요청을 찾을 수 없습니다.", 404)
-    item.responseStatus = body.responseStatus
+    item.ticketStatus = body.ticketStatus
     item.updatedAt = _now()
     await item.save()
     return ok(public_client_request(item))
@@ -456,7 +520,7 @@ async def _upsert_source_message(link: ProjectSourceLink, connection_id: str, *,
 # promptVersion)이라, 버전을 그대로 두면 이전 단발 판정 결과가 캐시로 재사용되어
 # 새 파이프라인이 아예 안 돈다. MATERIAL_CLASSIFICATION은 로직이 그대로라 "v1"을
 # 유지한다.
-CLIENT_REQUEST_PROMPT_VERSION = "v2-orchestrator"
+CLIENT_REQUEST_PROMPT_VERSION = "v3-ticket-match"
 
 
 async def _ensure_run(message: SourceMessage) -> AnalysisRun:
@@ -508,15 +572,47 @@ async def _ensure_material_run(material: ProjectMaterial) -> AnalysisRun:
     return run
 
 
+async def _attach_to_ticket(
+    ticket: ClientRequest, message: SourceMessage, item: AnalyzedRequest
+) -> None:
+    """후속 인바운드를 기존 티켓에 붙인다.
+
+    제목과 판정은 덮어쓰지 않는다. 티켓의 정체성은 처음 만들어진 요청이 정하고,
+    뒤따라온 메시지는 근거를 보태는 역할이다. 덮어쓰면 "로고 색 변경" 티켓이
+    마지막 메시지 제목으로 바뀌어 사람이 추적을 잃는다.
+    """
+    if message.id not in ticket.sourceMessageIds:
+        ticket.sourceMessageIds.append(message.id)
+    if item.requestQuote:
+        ticket.requestEvidence.append(
+            {"quote": item.requestQuote, "sourceMessageId": str(message.id)}
+        )
+    ticket.updatedAt = _now()
+    await ticket.save()
+
+
 async def _save_client_requests(
     message: SourceMessage, run: AnalysisRun, analyzed: list[AnalyzedRequest]
 ) -> None:
-    """요청 N건을 ordinal 순서로 upsert한다.
+    """분석 결과를 티켓으로 남긴다.
 
-    responseStatus는 건드리지 않는다. 사람이 대응 완료로 바꿔둔 카드가 재분석
-    때문에 다시 대기로 돌아가면 안 된다.
+    기존 티켓에 매칭된 요청은 그 티켓에 붙이고, 나머지만 새 티켓으로 만든다.
+    ticketStatus는 건드리지 않는다. 사람이 done으로 바꿔둔 티켓이 재분석 때문에
+    다시 열리면 안 된다.
     """
-    for ordinal, item in enumerate(analyzed):
+    new_ordinal = 0
+    for item in analyzed:
+        if item.matchedTicketId:
+            ticket = await ClientRequest.find_one(
+                ClientRequest.id == PydanticObjectId(item.matchedTicketId),
+                ClientRequest.ownerId == message.ownerId,
+                ClientRequest.projectId == message.projectId,
+            )
+            if ticket is not None:
+                await _attach_to_ticket(ticket, message, item)
+                continue
+            # 매칭된 티켓이 사라졌으면 새로 만든다.
+
         values = dict(
             analysisRunId=run.id,
             sourceChannel=message.sourceChannel,
@@ -541,7 +637,7 @@ async def _save_client_requests(
         existing = await ClientRequest.find_one(
             ClientRequest.ownerId == message.ownerId,
             ClientRequest.sourceMessageId == message.id,
-            ClientRequest.requestOrdinal == ordinal,
+            ClientRequest.requestOrdinal == new_ordinal,
         )
         if existing:
             for key, value in values.items():
@@ -552,16 +648,18 @@ async def _save_client_requests(
                 ownerId=message.ownerId,
                 projectId=message.projectId,
                 sourceMessageId=message.id,
-                requestOrdinal=ordinal,
+                sourceMessageIds=[message.id],
+                requestOrdinal=new_ordinal,
                 **values,
             ).insert()
+        new_ordinal += 1
 
-    # 재분석에서 요청 수가 줄면 앞선 분석이 남긴 카드를 지운다. 그대로 두면
+    # 재분석에서 새 티켓 수가 줄면 앞선 분석이 남긴 카드를 지운다. 그대로 두면
     # 원문에 없는 요청이 화면에 계속 남는다.
     stale = await ClientRequest.find(
         ClientRequest.ownerId == message.ownerId,
         ClientRequest.sourceMessageId == message.id,
-        ClientRequest.requestOrdinal >= len(analyzed),
+        ClientRequest.requestOrdinal >= new_ordinal,
     ).to_list()
     for item in stale:
         await item.delete()

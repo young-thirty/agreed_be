@@ -22,6 +22,7 @@ from infra.llm.harness import run_json
 from infra.llm.prompts import REQUEST_EXTRACT_SYSTEM_PROMPT
 from infra.llm.schemas import RequestExtractionResult
 from infra.llm.subagents.contract_match import FALLBACK_DECISION, match_against_contract
+from infra.llm.subagents.ticket_match import match_open_tickets
 
 # 원문 한 건에서 만들 수 있는 요청 수의 상한. 스키마에도 상한이 있지만,
 # 폴백 경로까지 포함해 한 번 더 잠근다.
@@ -40,6 +41,8 @@ class AnalyzedRequest(BaseModel):
     reason: str = ""
     documentQuote: str = ""
     documentId: str = ""
+    # 붙일 기존 티켓. None이면 새 티켓을 만든다.
+    matchedTicketId: str | None = None
 
 
 def _fallback_requests(raw_text: str) -> list[dict[str, str]]:
@@ -101,7 +104,13 @@ async def analyze_request_message(
     if not requests:
         return []
 
-    matches = await asyncio.gather(
+    # 티켓 매칭과 계약 대조는 서로를 기다릴 이유가 없다. 함께 돌린다.
+    ticket_task = match_open_tickets(
+        owner_id=owner_id,
+        project_id=project_id,
+        request_titles=[item["summaryTitle"] for item in requests],
+    )
+    contract_task = asyncio.gather(
         *(
             match_against_contract(
                 owner_id=owner_id,
@@ -114,17 +123,27 @@ async def analyze_request_message(
         ),
         return_exceptions=True,
     )
+    ticket_ids, matches = await asyncio.gather(
+        ticket_task, contract_task, return_exceptions=True
+    )
+    if isinstance(ticket_ids, BaseException):
+        # 매칭이 실패하면 전부 새 티켓으로 둔다. 잘못 붙이는 것보다 낫다.
+        ticket_ids = [None] * len(requests)
+    if isinstance(matches, BaseException):
+        matches = [None] * len(requests)
 
     analyzed: list[AnalyzedRequest] = []
-    for item, match in zip(requests, matches):
-        if isinstance(match, BaseException):
-            # 대조 하나가 실패해도 나머지 요청은 살린다. 판정만 주황으로 둔다.
+    for item, match, ticket_id in zip(requests, matches, ticket_ids):
+        # match가 None이면 대조 전체가, BaseException이면 이 요청 하나가 실패한 것이다.
+        # 어느 쪽이든 나머지 요청은 살리고 판정만 주황으로 내린다.
+        if match is None or isinstance(match, BaseException):
             analyzed.append(
                 AnalyzedRequest(
                     summaryTitle=item["summaryTitle"],
                     requestQuote=item["quote"],
                     decision=FALLBACK_DECISION,
                     reason="확인 가능한 근거가 부족합니다.",
+                    matchedTicketId=ticket_id,
                 )
             )
             continue
@@ -136,6 +155,7 @@ async def analyze_request_message(
                 reason=match.reason,
                 documentQuote=match.documentQuote,
                 documentId=match.documentId,
+                matchedTicketId=ticket_id,
             )
         )
     return analyzed

@@ -18,10 +18,12 @@ from app.api.projects import _project_or_404
 from app.auth import get_current_user
 from app.public_data import public_requirement
 from app.response import fail, ok
-from core.domain import Decision, RequirementStatus, Tone, status_change
+from core.domain import Decision, RequirementStatus, status_change
 from core.state_machine import TRANSITIONS, transition
 from infra.llm.client import has_api_key
-from infra.llm.prompts import build_requirement_text
+from infra.llm.prompts import (
+    DEFAULT_REPLY_STYLE, REPLY_STYLES, build_requirement_text, resolve_reply_style,
+)
 from infra.llm.reply import build_questions, build_reply
 from models import Contract, Project, Requirement
 from models.user import User
@@ -42,7 +44,9 @@ class RequirementTransitionRequest(BaseModel):
 
 
 class RequirementReplyDraftRequest(BaseModel):
-    tone: Tone = "professional"
+    # 말투 키. Literal로 박지 않는 이유는 목록을 프론트가 정하기 때문이다.
+    # 등록되지 않은 값은 라우트가 400으로 거절한다(infra/llm/prompts.py).
+    tone: str = Field(default=DEFAULT_REPLY_STYLE, max_length=40)
     # 사람이 이 요구사항을 어떤 상태로 확정할지 정한 값. 초안 내용이 여기서 갈린다.
     # 아직 안 정했으면 None이고, 그때는 확인 후 회신하겠다는 중립적인 답이 나온다.
     intent: RequirementStatus | None = None
@@ -116,6 +120,8 @@ async def requirement_reply(
     requirement = await _project_requirement(project, requirement_id, current_user.id)
     if requirement is None:
         return fail("해당 요구사항을 찾을 수 없습니다.", 404)
+    if resolve_reply_style(body.tone) is None:
+        return fail("지원하지 않는 말투입니다. 목록은 /api/reply-styles에서 확인해 주세요.")
     if not has_api_key():
         return fail("AI 설정이 없어 답변 초안을 만들지 못했습니다. 서버 환경변수를 확인해 주세요.", 503)
     try:
@@ -170,3 +176,12 @@ async def transition_project_requirement(
         requirement.decision = body.decision
     await requirement.save()
     return ok(public_requirement(requirement))
+
+
+@router.get("/reply-styles")
+async def reply_styles():
+    """답변 초안에 쓸 수 있는 말투 목록. 로그인 없이도 볼 수 있다."""
+    return ok(
+        {"styles": [{"styleId": key, "description": text} for key, text in REPLY_STYLES.items()],
+         "default": DEFAULT_REPLY_STYLE}
+    )
