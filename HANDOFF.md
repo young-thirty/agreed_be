@@ -36,6 +36,8 @@ provider token은 백엔드에서만 다룹니다.
 - 프로젝트 목록·상세·요청·자료·소유권 API
 - 프로젝트별 계약·요구사항 조회/전이/apply
 - 프로젝트 Gmail 상대·Slack 채널 source-link 등록과 sync
+- Git 저장소 연결(`repoFullName`)과 질문 응답형 코드 탐색 서브 에이전트(`/git/ask`)
+- Slack 파일 원본을 S3에 저장(`ProjectMaterial.storageKey`), 버킷 미설정 시 건너뜀
 - 원문 저장 후 BackgroundTasks 요청 3색 판정·근거·자료 종류 분류
 - 요청 다건 추출(원문 1건→요청 N건) + 계약 대조 서브 에이전트(`infra/llm/`
   하네스·오케스트레이터, DATA_AI_PIPELINE.md 5-a절)

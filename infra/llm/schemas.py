@@ -93,6 +93,12 @@ class ChecklistResult(BaseModel):
     items: list[str] = Field(default_factory=list, max_length=6)
 
 
+class GitExploreResult(BaseModel):
+    """Git 탐색 서브 에이전트의 결론."""
+
+    answer: str = Field(max_length=1500)
+
+
 class ReplyDraftResult(BaseModel):
     """고객에게 보낼 답변 초안. 생성만 하고 발송하지 않는다."""
 

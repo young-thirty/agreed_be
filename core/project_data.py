@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 
 ProjectStatus = Literal["ACTIVE", "DRAFT", "COMPLETED"]
 ProjectSort = Literal["status", "updatedAt", "createdAt"]
-SourceChannel = Literal["GMAIL", "SLACK"]
+SourceChannel = Literal["GMAIL", "SLACK", "GITHUB"]
 ProcessingStatus = Literal["PENDING", "PROCESSING", "COMPLETED", "FAILED"]
 AiDecisionStatus = Literal[
     "IN_SCOPE_ACTION_REQUIRED",

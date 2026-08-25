@@ -6,3 +6,4 @@ python-dotenv>=1.0
 httpx>=0.27
 pwdlib[argon2]>=0.3
 cryptography>=43
+boto3>=1.34

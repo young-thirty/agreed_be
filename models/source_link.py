@@ -21,6 +21,8 @@ class ProjectSourceLink(Document):
     threadId: str | None = None
     teamId: str | None = None
     channelId: str | None = None
+    # GITHUB 전용. "owner/repo" 형식이다.
+    repoFullName: str | None = None
     locatorKey: str = Field(min_length=1, max_length=300)
     createdAt: datetime = Field(default_factory=utc_now)
     updatedAt: datetime = Field(default_factory=utc_now)
