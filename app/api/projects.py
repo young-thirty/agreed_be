@@ -132,7 +132,14 @@ class RequirementTransitionRequest(BaseModel):
     decision: Decision | None = None
 
 
-class ReplyDraftRequest(BaseModel):
+class RequirementReplyDraftRequest(BaseModel):
+    """요구사항 단위 초안 요청.
+
+    같은 파일에 요청(ClientRequest) 단위의 ReplyDraftRequest가 따로 있다.
+    이름이 겹치면 파이썬이 뒤 정의로 조용히 덮어써서, 필드가 없다는
+    AttributeError가 무관해 보이는 곳에서 터진다. 실제로 그랬다.
+    """
+
     tone: Tone = "professional"
     # 사람이 이 요구사항을 어떤 상태로 확정할지 정한 값. 초안 내용이 여기서 갈린다.
     # 아직 안 정했으면 None이고, 그때는 확인 후 회신하겠다는 중립적인 답이 나온다.
@@ -927,7 +934,7 @@ async def requirement_questions(
 
 @router.post("/projects/{project_id}/requirements/{requirement_id}/reply")
 async def requirement_reply(
-    project_id: PydanticObjectId, requirement_id: PydanticObjectId, body: ReplyDraftRequest,
+    project_id: PydanticObjectId, requirement_id: PydanticObjectId, body: RequirementReplyDraftRequest,
     current_user: User | None = Depends(get_current_user),
 ):
     """고객에게 보낼 답변 초안. 보내지는 않는다. 사람이 읽고 고쳐서 직접 보낸다."""
