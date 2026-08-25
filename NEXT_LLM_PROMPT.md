@@ -78,14 +78,14 @@ OAuth를 다시 설계하지 않는다. 실시간 Gmail push/Slack Events가 아
 ### 화면 6 — 프로젝트 목록
 
 프로젝트명, 상태, 고객 이메일, GitHub, 최근 고객 메시지/시간 필드는 이미 응답한다.
-그러나 `app/api/projects.py::_project_card`가 active 티켓 수 하나를
-`activeTicketCount`와 `unansweredMessageCount` 양쪽에 똑같이 넣는 버그가 있다.
-
-가장 먼저 다음을 구현한다.
+두 count도 실제 의미대로 분리했고 `tests/test_project_counts.py`에 회귀 테스트를
+추가했다.
 
 - `activeTicketCount`: `ticketStatus == "active"`인 티켓 수
 - `unansweredMessageCount`: 고객이 보낸 메시지 중 아직 답장 완료되지 않은 메시지 수
-- `TicketDecision.sentAt` 또는 실제 응답 상태를 기준으로 계산하고 테스트 추가
+- 답장 완료는 현재 `TicketDecision.sentAt` 기준이다. 한 원문에서 요청이 여러 개
+  추출돼도 메시지는 한 건만 세며, 같은 원문에 발송 완료 판단이 하나라도 있으면
+  답변된 것으로 본다.
 
 ### 화면 7 — 프로젝트의 티켓 탭
 
@@ -163,12 +163,11 @@ fetch(..., { credentials: "include" })
 
 ## 바로 수행할 우선순위
 
-1. 화면 6의 두 count를 실제 의미대로 분리하고 회귀 테스트
-2. 티켓 상태 입력/출력 표현 정규화
-3. 화면 8용 context DTO와 문서 필드 정합화
-4. Swagger 예제와 `PRODUCT_API_DESIGN.md`, `USER_FLOW.md`를 실제 DTO와 동기화
-5. 사용자에게 알린 뒤 프론트 mock을 위 API로 교체
-6. 로컬 E2E와 배포 URL `/health`, `/docs` 확인 후 main push
+1. 티켓 상태 입력/출력 표현 정규화
+2. 화면 8용 context DTO와 문서 필드 정합화
+3. Swagger 예제와 `PRODUCT_API_DESIGN.md`, `USER_FLOW.md`를 실제 DTO와 동기화
+4. 사용자에게 알린 뒤 프론트 mock을 위 API로 교체
+5. 로컬 E2E와 배포 URL `/health`, `/docs` 확인 후 main push
 
 완료 보고에는 “구현”, “검증”, “프론트가 해야 할 일”, “실제 발송/실시간 sync처럼
 의도적으로 남긴 범위”를 분리해서 적는다. 구현하지 않은 것을 완료라고 말하지 않는다.

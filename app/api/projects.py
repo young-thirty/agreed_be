@@ -146,7 +146,7 @@ async def get_owned_project(project_id: PydanticObjectId, user: User | None) -> 
     return await Project.find_one(Project.id == project_id, Project.ownerId == user.id)
 
 
-async def _unanswered_count(project_id: PydanticObjectId, owner_id: PydanticObjectId) -> int:
+async def _active_ticket_count(project_id: PydanticObjectId, owner_id: PydanticObjectId) -> int:
     return await ClientRequest.find(
         ClientRequest.ownerId == owner_id,
         ClientRequest.projectId == project_id,
@@ -154,11 +154,37 @@ async def _unanswered_count(project_id: PydanticObjectId, owner_id: PydanticObje
     ).count()
 
 
+def _count_unanswered_messages(messages: list[SourceMessage], decisions: list[TicketDecision]) -> int:
+    """발송 완료 표시가 없는 고객 인바운드 원문 수를 센다."""
+
+    answered_message_ids = {
+        decision.sourceMessageId for decision in decisions if decision.sentAt is not None
+    }
+    return sum(message.id not in answered_message_ids for message in messages)
+
+
+async def _unanswered_message_count(
+    project_id: PydanticObjectId, owner_id: PydanticObjectId
+) -> int:
+    messages = await SourceMessage.find(
+        SourceMessage.ownerId == owner_id,
+        SourceMessage.projectId == project_id,
+        SourceMessage.direction == "RECEIVED",
+    ).to_list()
+    decisions = await TicketDecision.find(
+        TicketDecision.ownerId == owner_id,
+        TicketDecision.projectId == project_id,
+    ).to_list()
+    return _count_unanswered_messages(messages, decisions)
+
+
 async def _project_card(project: Project, owner_id: PydanticObjectId) -> dict:
     """프로토타입 목록이 요구하는 마지막 메시지와 GitHub 연결을 함께 준다."""
 
-    unanswered = await _unanswered_count(project.id, owner_id)
-    data = public_project(project, unanswered)
+    active_ticket_count = await _active_ticket_count(project.id, owner_id)
+    unanswered_message_count = await _unanswered_message_count(project.id, owner_id)
+    # 기존 unansweredRequestCount는 활성 티켓 수를 뜻하므로 호환성을 유지한다.
+    data = public_project(project, active_ticket_count)
     github = await ProjectSourceLink.find_one(
         ProjectSourceLink.ownerId == owner_id,
         ProjectSourceLink.projectId == project.id,
@@ -179,8 +205,8 @@ async def _project_card(project: Project, owner_id: PydanticObjectId) -> dict:
             + ("Z" if last_message.occurredAt.tzinfo is None else "")
             if last_message else data["updatedAt"]
         ),
-        "activeTicketCount": unanswered,
-        "unansweredMessageCount": unanswered,
+        "activeTicketCount": active_ticket_count,
+        "unansweredMessageCount": unanswered_message_count,
     })
     return data
 

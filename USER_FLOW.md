@@ -258,8 +258,18 @@ AI 분석·내 판단·답변 초안 세 블록이 통째로 빠진다. 처리�
 
 `GET /api/projects` · `GET /api/projects/{projectId}`
 
-> 이 절은 화면 설명을 아직 받지 못했다. 프로젝트 단위 흐름이 정해지면
-> 여기에 이어 적는다.
+프로젝트 목록 카드는 프로젝트명·상태·고객 이메일·GitHub 저장소·최근 고객
+메시지와 다음 두 수치를 반환한다.
+
+| 필드 | 의미 |
+|---|---|
+| `activeTicketCount` | `ticketStatus == "active"`인 티켓 수 |
+| `unansweredMessageCount` | 고객이 보낸 `RECEIVED` 원문 중 `TicketDecision.sentAt`이 없는 메시지 수 |
+
+한 고객 메시지에서 요청이 여러 개 추출돼도 `unansweredMessageCount`는 원문 기준
+1건이다. 같은 원문에 연결된 판단 중 하나라도 발송 완료 표시가 있으면 답변된
+메시지로 본다. 실제 외부 발송 여부가 아니라 현재 `mark-sent`가 남기는 서비스
+내부 상태를 기준으로 한다.
 
 ---
 
