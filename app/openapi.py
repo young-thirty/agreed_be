@@ -21,6 +21,13 @@ Agreed 프론트엔드가 호출하는 FastAPI입니다.
 3. 이후 잠금 표시된 API를 그대로 실행하면 됩니다. 프론트 fetch는
    `credentials: "include"`를 사용합니다.
 
+### 시연용 테스트 계정
+
+`POST /api/auth/login`에서 테스트 계정 이메일 `demo@agreed.local`을 사용합니다.
+비밀번호는 팀 내부 공유값으로 입력하고, 로그인 성공 후 같은 브라우저에서 Vercel
+프론트로 돌아가 Gmail·Slack 연결을 실행합니다. 브라우저의 서드파티 쿠키 차단이
+켜져 있으면 세션 쿠키를 허용해야 합니다.
+
 성공 JSON은 `{ "ok": true, "data": ... }`, 오류 JSON은
 `{ "ok": false, "error": "..." }` 형식입니다. OAuth callback은 provider가
 호출하는 경로이고, Slack 파일은 JSON이 아닌 binary 응답입니다.
