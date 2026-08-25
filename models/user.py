@@ -16,6 +16,9 @@ class User(Document):
     name: str
     email: Annotated[str, Indexed(unique=True)]
     passwordHash: str
+    # 이 필드가 추가되기 전에 가입한 시연 계정도 읽을 수 있도록 nullable로 둔다.
+    # 신규 회원가입 API에서는 항상 필수로 받아 저장한다.
+    phoneNumber: str | None = None
     createdAt: datetime = Field(default_factory=_utc_now)
 
     class Settings:

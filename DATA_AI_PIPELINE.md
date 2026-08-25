@@ -1,7 +1,7 @@
 # Agreed 채널 데이터·AI 처리 설계
 
-> 대시보드 시안과 현재 확정 요구사항을 백엔드 데이터 흐름으로 옮긴 문서다.
-> 세부 기능 확정서가 오면 필드와 API를 고정하되 아래 안전 경계는 유지한다.
+> 대시보드 시안과 최종 기획 명세를 백엔드 데이터 흐름으로 옮긴 문서다.
+> 공개 DTO와 API의 단일 기준은 `PRODUCT_API_DESIGN.md`이며 아래 안전 경계를 유지한다.
 
 ## 1. 한 줄 구조
 
@@ -37,7 +37,7 @@ token은 localStorage, JavaScript가 읽을 수 있는 쿠키, API 응답에 등
 | `User` | Agreed 로그인 사용자 | 사용자 ID |
 | `Project` | 한 계약과 관련 자료·대화를 묶는 단위 | `ownerId + projectId` |
 | `IntegrationConnection` | 암호화한 Gmail/Slack 권한 | 사용자 + provider 계정/워크스페이스 |
-| `ProjectDocument` | 계약서·제안서·요구사항 문서·회의록과 추출 텍스트 | 프로젝트 + 문서 ID + 버전 |
+| `ProjectMaterial` | 계약서·제안서·요구사항 문서·회의록과 추출 텍스트 | 프로젝트 + 자료 ID + 버전 |
 | `SourceMessage` | 수정하지 않는 Gmail/Slack 원문 | provider + 계정 + provider message ID |
 | `AnalysisRun` | 특정 원문·문서 버전에 대한 AI 산출물 | source ID + prompt/model/document 버전 |
 | `Requirement` | 사람이 처리하는 요구사항 업무 흐름 | 프로젝트 + requirement ID |
@@ -45,7 +45,7 @@ token은 localStorage, JavaScript가 읽을 수 있는 쿠키, API 응답에 등
 | `ContractVersion` | 승인 후 쌓이는 계약 버전 | 프로젝트 + version |
 | `AuditEvent` | 누가 무엇을 승인·반영했는지 | append-only event ID |
 
-`SourceMessage`와 `ProjectDocument` 원문은 AI 결과로 덮어쓰지 않는다. 재분석은 기존
+`SourceMessage`와 `ProjectMaterial` 원문은 AI 결과로 덮어쓰지 않는다. 재분석은 기존
 결과를 수정하지 않고 새 `AnalysisRun`을 만든다. 그래야 모델이나 프롬프트를 바꾼 뒤
 왜 결과가 달라졌는지 추적할 수 있다.
 
@@ -66,16 +66,20 @@ token은 localStorage, JavaScript가 읽을 수 있는 쿠키, API 응답에 등
 프로젝트 화면은 원문 목록과 검증이 끝난 분석 결과만 받는다.
 
 ```text
-GET /api/projects/{projectId}/requests?cursor=...
-  source: gmail | slack
-  sender: 메일 주소 또는 Slack 사용자/스레드
-  rawText: 원문
-  sentAt: provider 시각
-  analysisStatus: queued | running | completed | needsReview | failed
-  verdict: in_scope | needs_clarification | scope_change | null
+GET /api/projects/{projectId}/requests
+  requestId, projectId
+  sourceChannel: GMAIL | SLACK
+  senderDisplay: 메일 주소 또는 Slack 표시 이름 | null
+  aiProcessingStatus: PENDING | PROCESSING | COMPLETED | FAILED
+  summaryTitle: string | null
+  aiDecisionStatus: IN_SCOPE_ACTION_REQUIRED
+                    | OUT_OF_SCOPE_COORDINATION_REQUIRED
+                    | EXTRA_REQUEST
+                    | null
+  responseStatus: WAITING | COMPLETED
 ```
 
-목록 정렬은 `sentAt` 내림차순, 페이지네이션은 cursor 방식으로 한다. 프론트가 Gmail
+목록 정렬은 원문 발생 시각 내림차순이며 시연 MVP에서는 전체 배열을 반환한다. 프론트가 Gmail
 20통·Slack 50통을 매번 다시 provider에서 가져와 합치는 구조는 운영 구조로 쓰지 않는다.
 
 ## 5. AI는 한 번에 전부 시키지 않는다
@@ -90,14 +94,14 @@ GET /api/projects/{projectId}/requests?cursor=...
 6. **체크리스트** — 사람이 답변 전에 확인할 범위·납기·비용·질문 항목을 만든다.
 7. **답변 초안** — 사용자가 선택·수정한 체크리스트만 입력으로 받아 생성한다.
 
-요청 카드의 색 판정(`AnalysisVerdict`)과 합의 진행 상태(`RequirementStatus`)는 다른
+요청 카드의 색 판정(`AiDecisionStatus`)과 합의 진행 상태(`RequirementStatus`)는 다른
 값이다. 초록 카드가 곧 합의 상태라는 뜻이 아니다.
 
 | 판정 | 색 | 기준 |
 |---|---|---|
-| `in_scope` | 초록 | 현 계약·문서에 요청을 직접 뒷받침하는 조항이 있고 충돌이 없음 |
-| `needs_clarification` | 주황 | 표현이 애매함, 자료가 부족함, 경계에 걸리거나 작은 범위 확대 가능성이 있음 |
-| `scope_change` | 빨강 | 새 산출물·명시적 범위 추가·납기/비용 변경처럼 계약 밖 변경 근거가 분명함 |
+| `IN_SCOPE_ACTION_REQUIRED` | 초록 | 현 계약·문서에 요청을 직접 뒷받침하는 조항이 있고 충돌이 없음 |
+| `OUT_OF_SCOPE_COORDINATION_REQUIRED` | 주황 | 표현이 애매함, 자료가 부족함, 경계에 걸리거나 작은 범위 확대 가능성이 있음 |
+| `EXTRA_REQUEST` | 빨강 | 새 산출물·명시적 범위 추가·납기/비용 변경처럼 계약 밖 변경 근거가 분명함 |
 
 근거가 부족하거나 서로 충돌하면 초록·빨강을 억지로 고르지 않고 주황으로 내린다.
 
@@ -111,7 +115,7 @@ GET /api/projects/{projectId}/requests?cursor=...
 LLM이 만든 인용문을 그대로 믿지 않는다. 정규화한 인용이 저장 원문에 포함되는지
 코드가 확인하고, 문서 버전과 내용 hash도 맞는 경우에만 화면에 표시한다. 하나라도
 검증되지 않으면 해당 근거를 버린다. 판정을 지지할 근거가 남지 않으면
-`needs_clarification`으로 강등하고 "확인 가능한 근거가 부족합니다"를 표시한다.
+`OUT_OF_SCOPE_COORDINATION_REQUIRED`로 강등하고 "확인 가능한 근거가 부족합니다"를 표시한다.
 
 내부 chain-of-thought는 저장·표시하지 않는다. 사용자가 검증할 수 있는 짧은 판단 이유와
 실제 인용만 저장한다.
@@ -148,10 +152,10 @@ AnalysisRun
 
 1. 앱 로그인·사용자별 소유권과 provider token 암호화
 2. `feat/#6` Gmail/Slack OAuth·조회 어댑터의 FastAPI 이관
-3. `Project`, `ProjectDocument`, `SourceMessage`와 증분 수집
+3. `Project`, `ProjectMaterial`, `SourceMessage`와 증분 수집
 4. 단계별 `AnalysisRun`과 근거 검증
 5. 체크리스트·답변 초안
 6. 멱등 계약 반영·감사 로그
 7. 배포 후 Slack Events / Gmail 증분 수집 worker와 평가 데이터셋
 
-기능 확정서가 오기 전에는 3단계 이후의 필드·API를 임의로 고정하지 않는다.
+공개 필드·API는 `PRODUCT_API_DESIGN.md`와 Swagger를 함께 갱신한다.

@@ -10,6 +10,7 @@ from pymongo import AsyncMongoClient
 
 from app.api import analyze, auth, contract, email, requirements, slack
 from app.auth import SESSION_COOKIE_NAME
+from app.openapi import API_DESCRIPTION, OPENAPI_TAGS, configure_openapi
 from app.response import fail, ok
 from models import DOCUMENT_MODELS
 
@@ -45,7 +46,17 @@ async def lifespan(_: FastAPI):
     await client.close()
 
 
-app = FastAPI(title="Agreed API", lifespan=lifespan)
+app = FastAPI(
+    title="Agreed API",
+    description=API_DESCRIPTION,
+    version="0.2.0",
+    lifespan=lifespan,
+    openapi_tags=OPENAPI_TAGS,
+    servers=[
+        {"url": "/", "description": "현재 FastAPI 서버"},
+        {"url": "http://localhost:8000", "description": "로컬"},
+    ],
+)
 
 # 프론트엔드(3000)와 API(8000)가 다른 출처라 CORS가 없으면 브라우저가 전부 막는다.
 app.add_middleware(
@@ -87,3 +98,6 @@ app.include_router(slack.router, prefix="/api")
 async def health():
     """배포가 살아 있는지 확인하는 용도다. 도메인 로직을 여기에 넣지 않는다."""
     return ok({"status": "up"})
+
+
+configure_openapi(app)

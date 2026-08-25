@@ -15,11 +15,15 @@ Google access/refresh token과 Slack bot token은 프론트가 받거나 저장�
 ## 로그인
 
 ```text
-POST /api/auth/signup  { name, email, password }
+POST /api/auth/signup  { name, email, password, phoneNumber }
 POST /api/auth/login   { email, password }
 POST /api/auth/logout
 GET  /api/auth/me
 ```
+
+회원가입·로그인·현재 사용자 조회의 `data.user`는
+`{ userId, name, email, phoneNumber, createdAt }` 형식입니다. 이 기능 도입 전에
+만든 로컬 계정은 `phoneNumber`가 `null`일 수 있습니다.
 
 로그인은 소셜 로그인이 아닙니다. 로그인한 다음 Gmail·Slack을 별도로 연결합니다.
 
@@ -80,4 +84,7 @@ Slack 메시지 파일에는 provider의 `url_private` 대신 `fileId`만 내려
 - 5초·20초마다 provider를 직접 polling하던 코드
 
 현재 조회 API는 수동 새로고침/화면 진입 시 호출하면 됩니다. 프로젝트별 원문 저장과
-자동 수집은 기능 확정서 이후 `SourceMessage`와 worker로 추가합니다.
+자동 수집은 `PRODUCT_API_DESIGN.md`의 P1 순서로 추가합니다.
+
+Swagger는 백엔드를 띄운 뒤 `http://localhost:8000/docs`에서 확인합니다. 회원가입 또는
+로그인을 먼저 실행하면 같은 브라우저의 HttpOnly 세션으로 보호 API도 시험할 수 있습니다.

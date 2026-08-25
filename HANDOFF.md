@@ -75,7 +75,7 @@ gitignore 대상이며 파일 권한은 600으로 맞춥니다.
 
 ## 아직 구현하지 않은 다음 단계
 
-기능 확정서를 받은 뒤 아래를 순서대로 추가합니다.
+최종 기획 명세를 기준으로 아래를 순서대로 추가합니다.
 
 1. 여러 프로젝트를 위한 `Project`와 프로젝트별 계약
 2. 계약서·제안서 파일과 추출 텍스트
@@ -85,8 +85,8 @@ gitignore 대상이며 파일 권한은 600으로 맞춥니다.
 6. Slack Events / Gmail push 또는 worker
 7. 연동 해제·provider revoke, 운영 rate limit과 보관 정책
 
-상세 흐름은 [DATA_AI_PIPELINE.md](./DATA_AI_PIPELINE.md)에 있습니다. 필드와 API는
-기능 확정서 전에는 임의로 고정하지 않습니다.
+상세 흐름은 [DATA_AI_PIPELINE.md](./DATA_AI_PIPELINE.md), 확정 DTO와 API는
+[PRODUCT_API_DESIGN.md](./PRODUCT_API_DESIGN.md)에 있습니다.
 
 ## 검증과 배포
 
