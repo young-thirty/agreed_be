@@ -130,6 +130,14 @@ OAuth를 다시 설계하지 않는다. 실시간 Gmail push/Slack Events가 아
 - 근거 문장과 근거 문서는 실제 `requestEvidence`, `documentEvidence`, GitHub 경로를
   사용한다. 근거가 없으면 만들어내지 말고 “확인하지 못함”으로 반환한다.
 - 사람이 입력한 추가 비용·납기와 판단은 기존 decision/contract apply 흐름을 사용한다.
+- 현재 `ticket` 근거는 AI가 고른 매칭 결과가 아니라 같은 프로젝트의 최근 티켓
+  최대 3개다. 매칭 결과 ID를 저장·재사용해 무관한 티켓이 근거로 노출되지 않게 한다.
+- `POST /solution`은 계약 대조와 GitHub clone을 함께 실행한다. 화면의 개발 확인
+  버튼에서 최초 호출할지, 개발 현황 API를 분리할지 정해 버튼의 의미와 맞춘다.
+- 기본 `replyDraft`는 solution에 먼저 생기지만 화면에서는 사람의 처리 방식 결정
+  전까지 숨긴다. 결정값을 반영한 최종 초안은 `/reply-draft`로 다시 만든다.
+- `feasibility`는 구조화된 AI 판단이며 사실을 독립 검증하는 판정기가 아니다.
+  저장소 미연결·근거 부족이면 `needs_clarification`으로 내려가도록 유지한다.
 
 ## 프론트 연동 상태
 
@@ -166,4 +174,3 @@ fetch(..., { credentials: "include" })
 의도적으로 남긴 범위”를 분리해서 적는다. 구현하지 않은 것을 완료라고 말하지 않는다.
 
 ---
-

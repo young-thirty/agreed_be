@@ -263,37 +263,37 @@ AI 분석·내 판단·답변 초안 세 블록이 통째로 빠진다. 처리�
 
 ---
 
-## 7. 화면이 요구하지만 백엔드가 아직 못 채우는 값
+## 7. 현재 배선 상태와 남은 차이
 
-`GET /api/tickets/{id}`의 `analysis` payload를 화면과 대조한 결과다.
-시연 시나리오를 짤 때 이 목록을 먼저 본다.
+`GET /api/tickets/{id}`의 `analysis` payload를 화면과 대조한 결과다. 아래 7-1과
+7-3은 `9878832`에서 연결됐다. 남은 차이는 관련 티켓의 정확도, 개발 현황 호출
+시점, 실제 외부 발송이다.
 
-### 7-1. `analysis` 빈 필드 셋
+### 7-1. `analysis` 필드 배선 완료
 
-| 필드 | 현재 | 화면이 기대하는 것 |
+| 필드 | 현재 값의 출처 | 화면 |
 |---|---|---|
-| `intents` | 항상 `[]` | 이미지 2의 "3개의 요청을 찾았습니다" 목록 |
-| `missingInfo` | 항상 `[]` | "사용자 판단 필요: 추가 비용, 완료 예정일" |
-| `devContext` | 항상 `None` | "개발 상황도 확인할까요?" 카드와 저장소 이름 |
+| `intents` | 같은 원문에서 추출된 형제 `ClientRequest` | 이미지 2의 "3개의 요청을 찾았습니다" 목록 |
+| `missingInfo` | `solution.feasibility.requiredHumanInput` | "사용자 판단 필요: 추가 비용, 완료 예정일" |
+| `devContext` | GitHub source link와 `solution.developmentStatus` | 개발 상황 카드와 저장소 이름 |
 
-`intents`는 오케스트레이터가 이미 요청을 여러 건으로 쪼개고 있으므로
-(`MAX_REQUESTS_PER_MESSAGE = 5`), 그 결과를 payload로 올리면 된다.
-`devContext`는 `ProjectSourceLink`의 `GITHUB` 링크에서 `repoFullName`을
-읽어 채우면 된다.
+솔루션이 아직 생성되지 않았으면 개발·가능 여부 값은 `확인하지 못했습니다`로
+나온다. 화면 진입 시 `POST /api/requests/{id}/solution`을 한 번 호출하고 저장된
+결과를 다시 조회해야 실제 값이 채워진다.
 
-### 7-2. 근거 종류가 둘뿐이다
+### 7-2. 근거 종류는 연결됐지만 관련 티켓 선별은 보완 필요
 
-지금 `evidence`는 `message`(요청 원문)와 `document`(프로젝트 자료)만 만든다.
-이미지 3이 요구하는 **관련 Ticket**과 **GitHub** 근거 종류가 없다.
+`evidence`는 `message`, `document`, `ticket`, `github` 네 종류를 만든다.
+GitHub 근거는 `solution.developmentStatus.relatedPaths`와 `relatedRefs`를 사용한다.
 
-- 관련 Ticket: 티켓 매칭 에이전트가 이미 후보를 보고 있으므로 그 결과를 남기면 된다
-- GitHub: `solution.developmentStatus.relatedPaths` · `relatedRefs`에 값이 있다.
-  payload로 올리는 배선만 없다
+다만 `ticket` 근거는 아직 티켓 매칭 에이전트가 확정한 결과가 아니라 같은 프로젝트의
+최근 티켓 최대 3개다. 무관한 티켓을 "관련 Ticket"으로 표시할 수 있으므로,
+매칭 결과 ID를 저장해 그대로 조회하거나 유사도 기준을 추가해야 한다.
 
-### 7-3. 고정 네 항목이 아직 두 개다
+### 7-3. 고정 네 항목 배선 완료
 
-`fields`는 `계약 판단`과 `판단 근거`만 만든다. 화면은 `범위 / 개발 / 일정 /
-사용자 판단 필요` 네 칸을 고정으로 기대한다. 재료는 `solution`에 이미 있다.
+`fields`는 `범위 / 개발 / 일정 / 사용자 판단 필요` 네 칸을 항상 반환한다.
+값이 없을 때도 칸을 없애지 않고 `확인하지 못했습니다` 또는 `없음`을 넣는다.
 
 | 화면 항목 | 솔루션 필드 |
 |---|---|
@@ -301,6 +301,10 @@ AI 분석·내 판단·답변 초안 세 블록이 통째로 빠진다. 처리�
 | 개발 | `developmentStatus.currentState` |
 | 일정 | `impactAnalysis.existingFeatureImpact` |
 | 사용자 판단 필요 | `feasibility.requiredHumanInput` |
+
+여기서 `일정`은 AI가 날짜를 정하는 칸이 아니라 기존 기능 영향과 테스트 범위를
+보여주는 **일정 영향**이다. 실제 완료 예정일은 사람이 `decisionFields.dueDate`에
+입력한다.
 
 ### 7-4. 답변이 실제로 나가지 않는다
 
@@ -317,6 +321,16 @@ AI 분석·내 판단·답변 초안 세 블록이 통째로 빠진다. 처리�
 **다른 브라우저·시크릿 창에서 열면 401로 빈다.**
 
 백엔드 API는 그대로 두고 프론트가 붙일 예정이다.
+
+### 7-6. 개발 확인 버튼과 답변 초안의 호출 시점
+
+현재 `POST /api/requests/{id}/solution`은 계약 대조와 GitHub clone을 한 번에
+실행한다. 화면의 "개발 상황 확인" 버튼을 엄밀히 유지하려면 이 API를 그 버튼에서
+처음 호출하거나, 개발 현황만 별도 refresh하는 API로 나눠야 한다.
+
+또한 솔루션 종합 결과에 기본 `replyDraft`가 포함되지만 화면은 사람이 처리 방식과
+금액·납기를 정하기 전에는 이를 숨긴다. 결정 이후 말투별 초안은
+`POST /api/requests/{id}/reply-draft`로 다시 만들어 `TicketDecision.drafts`에 저장한다.
 
 ---
 
