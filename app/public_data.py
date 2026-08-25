@@ -41,6 +41,8 @@ def public_project(project: Project, unanswered_request_count: int = 0) -> dict[
         "projectId": str(project.id),
         "name": project.name,
         "clientName": project.clientName,
+        "clientEmail": project.clientEmail,
+        "description": project.description,
         "startDate": project.startDate.isoformat() if project.startDate else None,
         "endDate": project.endDate.isoformat() if project.endDate else None,
         "contractPrice": project.contractPrice,

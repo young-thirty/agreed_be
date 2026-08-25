@@ -42,6 +42,22 @@ class ExtractResult(BaseModel):
     items: list[ExtractedItem]
 
 
+class ClarificationQuestionsResult(BaseModel):
+    """답변 전에 클라이언트에게 되물을 확인 질문."""
+
+    questions: list[str] = Field(min_length=1, max_length=6)
+
+
+class RequirementReplyResult(BaseModel):
+    """요구사항 하나를 놓고 만든 답변 초안. 사람이 그대로 읽고 고칠 수 있어야 한다.
+
+    아래 ReplyDraftResult(요청 단위)와 쓰임이 다르다. 이름이 겹치면 뒤 정의가
+    앞 정의를 조용히 덮으므로 갈라 둔다.
+    """
+
+    draft: str = Field(min_length=1, max_length=4000)
+
+
 class RequestAnalysisResult(BaseModel):
     summaryTitle: str = Field(max_length=80)
     decision: AiDecisionStatus

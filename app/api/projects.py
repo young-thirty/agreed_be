@@ -22,7 +22,7 @@ from app.public_data import public_material, public_project
 from app.requirement_sync import sync_requirements_from_requests
 from app.response import fail, ok
 from core.contract_ops import apply_to_contract, diff_contract
-from core.domain import ContractState, Decision, RequirementStatus
+from core.domain import ContractState, Decision, RequirementStatus, Tone, status_change
 from core.project_data import (
     DocumentType, ProcessingStatus, ProjectSort, ProjectStatus,
     ResponseStatus, SourceChannel,
@@ -32,13 +32,14 @@ from infra.integrations.gmail import (
     GMAIL_SCOPES, fetch_recent, refresh_access_token,
 )
 from infra.integrations.slack import fetch_file, fetch_history
-from infra.llm.client import EXTRACT_MODEL
+from infra.llm.client import EXTRACT_MODEL, has_api_key
 from infra.llm.harness import run_json
 from infra.llm.orchestrator import AnalyzedRequest, analyze_request_message
 from infra.llm.subagents.checklist import build_checklist
 from infra.llm.subagents.git_explore import ask_repository
 from infra.llm.subagents.reply_draft import build_reply_draft
-from infra.llm.prompts import PROJECT_MATERIAL_SYSTEM_PROMPT
+from infra.llm.prompts import PROJECT_MATERIAL_SYSTEM_PROMPT, build_requirement_text
+from infra.llm.reply import build_questions, build_reply
 from infra.llm.schemas import MaterialClassificationResult
 from infra.security.provider_tokens import TokenEncryptionError
 from infra.storage.s3 import has_s3, put_object
@@ -72,12 +73,29 @@ def _status_rank(status: ProjectStatus) -> int:
     return {"ACTIVE": 0, "DRAFT": 1, "COMPLETED": 2}[status]
 
 
-class ProjectCreateRequest(BaseModel):
+class ProjectUpdateRequest(BaseModel):
+    """사람이 화면에서 고칠 수 있는 값. 폼이 늘 전부 보내므로 부분 갱신은 받지 않는다.
+
+    status는 여기에 없다. 진행 상태는 /status가 따로 맡는다. 수정 폼이
+    status를 함께 보내면 안 보낸 경우와 구분하지 못해 진행 중인 프로젝트가
+    조용히 Draft로 되돌아갈 수 있다.
+    """
+
+
     name: str = Field(min_length=1, max_length=120)
     clientName: str = Field(min_length=1, max_length=120)
+    clientEmail: str | None = Field(
+        default=None,
+        max_length=320,
+        pattern=r"^[^\s@]+@[^\s@]+$",
+    )
+    description: str = Field(default="", max_length=1000)
     startDate: date | None = None
     endDate: date | None = None
     contractPrice: int | None = Field(default=None, ge=0)
+
+
+class ProjectCreateRequest(ProjectUpdateRequest):
     status: ProjectStatus = "DRAFT"
 
 
@@ -111,6 +129,17 @@ class RequirementTransitionRequest(BaseModel):
     decision: Decision | None = None
 
 
+class ReplyDraftRequest(BaseModel):
+    tone: Tone = "professional"
+    # 사람이 이 요구사항을 어떤 상태로 확정할지 정한 값. 초안 내용이 여기서 갈린다.
+    # 아직 안 정했으면 None이고, 그때는 확인 후 회신하겠다는 중립적인 답이 나온다.
+    intent: RequirementStatus | None = None
+    # 사람이 채운 금액·납기. 있으면 초안이 [금액]·[기한] 자리를 이 값으로 채운다.
+    decision: Decision | None = None
+    # 사람이 고르고 고친 질문이 들어온다. 화면에서 전부 뺐으면 빈 목록이다.
+    questions: list[str] = Field(default_factory=list, max_length=10)
+
+
 async def get_owned_project(project_id: PydanticObjectId, user: User | None) -> Project | None:
     if user is None:
         return None
@@ -140,6 +169,7 @@ async def create_project(body: ProjectCreateRequest, current_user: User | None =
         return fail("로그인이 필요합니다.", 401)
     project = Project(
         ownerId=current_user.id, name=body.name, clientName=body.clientName,
+        clientEmail=body.clientEmail, description=body.description,
         startDate=body.startDate, endDate=body.endDate, contractPrice=body.contractPrice,
         status=body.status, statusRank=_status_rank(body.status),
     )
@@ -176,6 +206,26 @@ async def project_detail(project_id: PydanticObjectId, current_user: User | None
     project, error = await _project_or_404(project_id, current_user)
     if error:
         return error
+    return ok(public_project(project, await _unanswered_count(project.id, current_user.id)))
+
+
+@router.patch("/projects/{project_id}")
+async def update_project(
+    project_id: PydanticObjectId, body: ProjectUpdateRequest,
+    current_user: User | None = Depends(get_current_user),
+):
+    project, error = await _project_or_404(project_id, current_user)
+    if error:
+        return error
+    project.name = body.name
+    project.clientName = body.clientName
+    project.clientEmail = body.clientEmail
+    project.description = body.description
+    project.startDate = body.startDate
+    project.endDate = body.endDate
+    project.contractPrice = body.contractPrice
+    project.updatedAt = _now()
+    await project.save()
     return ok(public_project(project, await _unanswered_count(project.id, current_user.id)))
 
 
@@ -836,6 +886,87 @@ async def apply_project_contract(project_id: PydanticObjectId, body: ContractApp
     return ok({"contract": public_contract(next_contract), "diff": diff_contract(contract, next_state)})
 
 
+async def _project_requirement(project, requirement_id: PydanticObjectId, owner_id: PydanticObjectId):
+    return await Requirement.find_one(
+        Requirement.id == requirement_id, Requirement.ownerId == owner_id,
+        Requirement.projectId == project.id,
+    )
+
+
+async def _requirement_text(project: Project, requirement: Requirement, owner_id: PydanticObjectId) -> str:
+    """확인 질문과 답변 초안이 함께 보는 재료를 만든다."""
+    contract = await Contract.find(
+        Contract.ownerId == owner_id, Contract.projectId == project.id
+    ).sort(-Contract.version).first_or_none()
+    return build_requirement_text(
+        project_name=project.name, client_name=project.clientName, contract=contract,
+        title=requirement.title, status=requirement.status,
+        quotes=[item.quote for item in requirement.evidence],
+    )
+
+
+@router.post("/projects/{project_id}/requirements/{requirement_id}/questions")
+async def requirement_questions(
+    project_id: PydanticObjectId, requirement_id: PydanticObjectId,
+    current_user: User | None = Depends(get_current_user),
+):
+    """답변 전에 클라이언트에게 되물을 확인 질문. 고르고 고치는 건 사람이 한다."""
+    project, error = await _project_or_404(project_id, current_user)
+    if error:
+        return error
+    requirement = await _project_requirement(project, requirement_id, current_user.id)
+    if requirement is None:
+        return fail("해당 요구사항을 찾을 수 없습니다.", 404)
+    if not has_api_key():
+        return fail("AI 설정이 없어 확인 질문을 만들지 못했습니다. 서버 환경변수를 확인해 주세요.", 503)
+    try:
+        questions = await build_questions(await _requirement_text(project, requirement, current_user.id))
+    except Exception:
+        return fail("확인 질문을 만들지 못했습니다. 다시 시도해 주세요.", 502)
+    return ok({"questions": questions})
+
+
+@router.post("/projects/{project_id}/requirements/{requirement_id}/reply")
+async def requirement_reply(
+    project_id: PydanticObjectId, requirement_id: PydanticObjectId, body: ReplyDraftRequest,
+    current_user: User | None = Depends(get_current_user),
+):
+    """고객에게 보낼 답변 초안. 보내지는 않는다. 사람이 읽고 고쳐서 직접 보낸다."""
+    project, error = await _project_or_404(project_id, current_user)
+    if error:
+        return error
+    requirement = await _project_requirement(project, requirement_id, current_user.id)
+    if requirement is None:
+        return fail("해당 요구사항을 찾을 수 없습니다.", 404)
+    if not has_api_key():
+        return fail("AI 설정이 없어 답변 초안을 만들지 못했습니다. 서버 환경변수를 확인해 주세요.", 503)
+    try:
+        draft = await build_reply(
+            await _requirement_text(project, requirement, current_user.id),
+            tone=body.tone, questions=body.questions, intent=body.intent,
+            decision=body.decision,
+        )
+    except Exception:
+        return fail("답변 초안을 만들지 못했습니다. 다시 시도해 주세요.", 502)
+    return ok({"draft": draft})
+
+
+@router.get("/projects/{project_id}/requirements/{requirement_id}/allowed")
+async def allowed_project_requirement(
+    project_id: PydanticObjectId, requirement_id: PydanticObjectId,
+    current_user: User | None = Depends(get_current_user),
+):
+    """화면이 고를 수 있는 상태만 보여주게 하려고 둔다."""
+    project, error = await _project_or_404(project_id, current_user)
+    if error:
+        return error
+    requirement = await _project_requirement(project, requirement_id, current_user.id)
+    if requirement is None:
+        return fail("해당 요구사항을 찾을 수 없습니다.", 404)
+    from core.state_machine import TRANSITIONS
+    return ok({"allowed": list(TRANSITIONS[requirement.status])})
+
+
 @router.post("/projects/{project_id}/requirements/{requirement_id}/transition")
 async def transition_project_requirement(
     project_id: PydanticObjectId, requirement_id: PydanticObjectId, body: RequirementTransitionRequest,
@@ -849,9 +980,15 @@ async def transition_project_requirement(
         return fail("해당 요구사항을 찾을 수 없습니다.", 404)
     from core.state_machine import transition
     try:
-        requirement.status = transition(requirement.status, body.to)
+        next_status = transition(requirement.status, body.to)
     except ValueError as exc:
         return fail(str(exc))
+    # 사람이 확정한 변화다. 타임라인에서 AI가 옮긴 것과 구분해 그린다.
+    requirement.history = [
+        *requirement.history,
+        status_change(requirement.status, next_status, by_human=True),
+    ]
+    requirement.status = next_status
     if body.decision is not None:
         requirement.decision = body.decision
     await requirement.save()

@@ -78,8 +78,14 @@ async def run_json(
     system_prompt: str,
     user_content: str,
     schema: type[T],
+    temperature: float = 0,
 ) -> T | None:
-    """단발 JSON mode 호출. 검증에 실패하면 오류를 덧붙여 1회만 재시도한다."""
+    """단발 JSON mode 호출. 검증에 실패하면 오류를 덧붙여 1회만 재시도한다.
+
+    temperature 기본값이 0인 이유가 있다. 지정하지 않으면 DeepSeek 기본값(1.0)으로
+    도는데, 같은 대화에서도 결과가 흔들려 요구사항 추출이 0건과 1건 사이를
+    오간다. 실측으로 확인한 값이라 취향이 아니다. 창작이 필요한 호출만 올린다.
+    """
 
     if not has_api_key():
         return None
@@ -93,6 +99,7 @@ async def run_json(
         response = await get_client().chat.completions.create(
             model=EXTRACT_MODEL,
             response_format={"type": "json_object"},
+            temperature=temperature,
             messages=messages,
         )
         return _validate(schema, response.choices[0].message.content)
@@ -112,6 +119,7 @@ async def run_json(
         response = await get_client().chat.completions.create(
             model=EXTRACT_MODEL,
             response_format={"type": "json_object"},
+            temperature=temperature,
             messages=retry,
         )
         return _validate(schema, response.choices[0].message.content)
