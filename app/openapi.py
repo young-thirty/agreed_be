@@ -12,88 +12,234 @@ from fastapi.openapi.utils import get_openapi
 
 
 API_DESCRIPTION = """
-Agreed 프론트엔드가 호출하는 FastAPI입니다.
+프리랜서가 계약 이후 클라이언트와 주고받는 대화에서 **새로 생긴 요구사항**을
+찾아내고, 계약 변경분을 사람이 승인하도록 돕는 API입니다.
 
-### 로컬 Swagger 테스트
+> AI는 무엇이 바뀌었는지 정리하고, 사람은 받아줄지·얼마에·언제까지를 결정합니다.
+> 계약을 바꾸는 통로는 `/contract/apply` 하나뿐이고 그 앞에 합의 여부 검사가 있습니다.
 
-1. `POST /api/auth/signup` 또는 `POST /api/auth/login`을 먼저 실행합니다.
-2. 브라우저가 HttpOnly `agreed_session` 쿠키를 자동으로 저장합니다.
-3. 이후 잠금 표시된 API를 그대로 실행하면 됩니다. 프론트 fetch는
-   `credentials: "include"`를 사용합니다.
+---
 
-### 시연용 테스트 계정
+## 읽는 순서
 
-`POST /api/auth/login`에서 테스트 계정 이메일 `demo@agreed.local`을 사용합니다.
-비밀번호는 팀 내부 공유값으로 입력하고, 로그인 성공 후 같은 브라우저에서 Vercel
-프론트로 돌아가 Gmail·Slack 연결을 실행합니다. 브라우저의 서드파티 쿠키 차단이
-켜져 있으면 세션 쿠키를 허용해야 합니다.
+API가 많아 보이지만 **네 묶음**입니다. 위에서 아래로 한 방향으로 흐릅니다.
 
-성공 JSON은 `{ "ok": true, "data": ... }`, 오류 JSON은
-`{ "ok": false, "error": "..." }` 형식입니다. OAuth callback은 provider가
-호출하는 경로이고, Slack 파일은 JSON이 아닌 binary 응답입니다.
+```
+① 인증        로그인해서 세션 쿠키를 받는다
+② 연동        Gmail·Slack·GitHub 접근 권한을 준다        (사용자 단위)
+③ 프로젝트    계약 하나를 만들고, 채널을 연결하고, 원문을 가져온다  (프로젝트 단위)
+④ 판정·반영   AI가 만든 요청 카드를 사람이 확인하고 계약에 반영한다
+```
 
-### 현재 구현
+**②와 ③을 헷갈리기 쉽습니다.**
+`/api/email/*`·`/api/slack/*`은 *연결이 살아 있는지 확인*하려고 provider를 직접
+읽습니다. DB에 저장하지 않습니다.
+프로젝트에 원문을 쌓는 것은 `/api/projects/{id}/source-links` + `/sync`입니다.
+분석·판정은 저장된 원문에만 일어납니다.
 
-- 이메일·비밀번호 인증과 HttpOnly 세션
-- Gmail·Slack OAuth 연동과 메시지 조회
-- 대화 붙여넣기 분석, 요구사항 전이, 계약 반영
-- 프로젝트·원문·요청·자료 저장과 프로젝트별 계약/요구사항 API
-- Gmail 상대·Slack 채널 sync 및 BackgroundTasks 기반 요청 분석·자료 분류
+---
 
-### 아직 보류한 범위
+## 최소 시연 경로
 
-실시간 provider 이벤트, 큐/워커, S3/OCR, 페이지네이션, 답장 발송은 시연 이후 단계다.
+```
+1. POST /api/auth/login                             세션 쿠키 발급
+2. GET  /api/email/status                           Gmail 연결 확인
+   (안 되어 있으면 브라우저로 GET /api/email/connect)
+3. POST /api/projects                               프로젝트 생성 (DRAFT)
+4. PATCH /api/projects/{id}/status  {"status":"ACTIVE"}   프로젝트 시작
+5. POST /api/projects/{id}/contract                 최초 계약 등록 (version 1)
+6. POST /api/projects/{id}/source-links             Gmail 상대 또는 Slack 채널 등록
+7. POST /api/projects/{id}/source-links/{sid}/sync  원문 저장 + AI 분석 시작
+8. GET  /api/projects/{id}/requests                 3색 판정 카드 확인
+9. GET  /api/projects/{id}/requirements             빨강 판정에서 생긴 요구사항
+10. POST /api/projects/{id}/requirements/{rid}/transition   사람이 '합의'로 올림
+11. POST /api/projects/{id}/contract/apply          계약 버전 N+1
+```
+
+5번을 건너뛰면 대조할 계약이 없어 판정이 전부 주황으로 나옵니다.
+7번은 즉시 응답하고 분석은 백그라운드로 돕니다 — 8번을 몇 초 뒤 다시 부르세요.
+
+---
+
+## 세 가지 상태 구분
+
+이름이 비슷해 가장 많이 섞이는 지점입니다.
+
+| 값 | 붙는 곳 | 뜻 |
+|---|---|---|
+| `status` (`ACTIVE`/`DRAFT`/`COMPLETED`) | 프로젝트 | 프로젝트 자체의 상태 |
+| `aiDecisionStatus` (3색) | 요청 카드 | AI가 본 계약 범위 안팎 |
+| `responseStatus` (`WAITING`/`COMPLETED`) | 요청 카드 | 사람이 대응했는지 |
+| `status` (9종 한국어) | 요구사항 | 합의 진행 단계 |
+
+**`aiDecisionStatus`와 요구사항 `status`는 완전히 다른 값입니다.**
+초록 카드가 곧 '합의'라는 뜻이 아닙니다. AI 판정과 사람의 합의는 독립입니다.
+
+### 3색 판정
+
+| 값 | 색 | 기준 |
+|---|---|---|
+| `IN_SCOPE_ACTION_REQUIRED` | 초록 | 계약·자료에 요청을 뒷받침하는 조항이 있다 |
+| `OUT_OF_SCOPE_COORDINATION_REQUIRED` | 주황 | 애매하거나 근거가 부족하다 |
+| `EXTRA_REQUEST` | 빨강 | 계약 밖 변경 근거가 분명하다 |
+
+**빨강만** 요구사항 카드로 승격되어 합의 흐름을 탑니다.
+
+---
+
+## 응답 규약
+
+```json
+{ "ok": true,  "data": ... }
+{ "ok": false, "error": "사용자가 그대로 읽을 한국어 문장" }
+```
+
+상태 코드는 정상 200, 잘못된 입력 400, 로그인 필요 401, 없음 404, 충돌 409,
+검증 실패 422, 외부 서비스 실패 502, 서버 오류 500입니다.
+필드 이름은 프론트와 맞추기 위해 **camelCase**입니다.
+
+예외: OAuth `connect`/`callback`은 브라우저 redirect라 GET이고,
+`GET /api/slack/file`은 JSON이 아닌 binary를 돌려줍니다.
+
+---
+
+## Swagger에서 시험하기
+
+1. `POST /api/auth/login`을 먼저 실행합니다.
+2. 브라우저가 HttpOnly `agreed_session` 쿠키를 자동 저장합니다.
+3. 이후 잠금 표시된 API를 그대로 실행하면 됩니다.
+
+프론트 fetch는 `credentials: "include"`를 씁니다. 서드파티 쿠키 차단이 켜져
+있으면 세션 쿠키를 허용해야 합니다.
+
+로그인 화면이 아직 없을 때는 로컬 `.env`에 `DEMO_SESSION_ENABLED=true`를 넣고
+`POST /api/auth/demo-session`을 한 번 실행하면 같은 브라우저에 쿠키가 생깁니다.
+운영에서는 반드시 `false`로 둡니다.
+
+---
+
+## AI가 하지 않는 일
+
+- 금액·납기·수락 여부를 결정하지 않습니다
+- 요구사항 상태를 '합의'·'완료'·'거절'로 제안하지 않습니다 (스키마에서 막힙니다)
+- 계약을 직접 수정하지 않습니다
+- 메일을 발송하지 않습니다 (답변 초안 **생성**까지만)
+
+모델이 만든 인용문은 코드가 원문과 다시 대조하고, 지어낸 인용이면 근거를 버린
+뒤 판정을 주황으로 내립니다.
+
+---
+
+## 아직 보류한 범위
+
+실시간 provider 이벤트(Slack Events·Gmail watch), 큐/워커, OCR·텍스트 추출,
+페이지네이션·검색, 답장 실제 발송, 수동 파일 업로드는 시연 이후 단계입니다.
+도메인 목표 모델과 미결정 정책 설계안은 저장소의 `DOMAIN_SPEC.md`에 있습니다.
 """.strip()
 
 
 OPENAPI_TAGS = [
     {
         "name": "시스템",
-        "description": "서버 기동 상태 확인.",
+        "description": "서버 기동 확인. 배포 health check가 이 경로를 씁니다.",
     },
     {
-        "name": "현재 · 인증",
-        "description": "Agreed 회원가입·로그인·로그아웃과 HttpOnly 세션.",
+        "name": "① 인증",
+        "description": (
+            "이메일·비밀번호 회원가입과 로그인. 성공하면 HttpOnly `agreed_session` "
+            "쿠키가 발급되고, 아래 모든 API가 이 쿠키로 소유자를 정합니다. "
+            "**요청 body의 사용자 ID를 신뢰하지 않습니다.** "
+            "Google·Slack OAuth는 로그인이 아니라 별도 연동입니다(② 참고)."
+        ),
     },
     {
-        "name": "현재 · Gmail",
-        "description": "로그인 사용자의 Gmail 읽기 전용 연동.",
+        "name": "② 연동 · Gmail",
+        "description": (
+            "로그인한 사용자가 Gmail 읽기 권한을 주는 단계입니다. "
+            "`connect`/`callback`은 브라우저 이동이라 GET이며, callback은 세션에 묶인 "
+            "난수 state를 검증하고 한 번 쓴 뒤 폐기합니다. "
+            "`messages`는 **연결 확인용 실시간 조회**라 DB에 저장하지 않습니다. "
+            "프로젝트에 원문을 쌓는 것은 ③의 sync입니다."
+        ),
     },
     {
-        "name": "현재 · Slack",
-        "description": "로그인 사용자의 Slack 워크스페이스·채널·메시지 조회.",
+        "name": "② 연동 · Slack",
+        "description": (
+            "워크스페이스·채널·메시지·스레드 조회. Gmail과 마찬가지로 연결 확인용이며 "
+            "저장하지 않습니다. 파일은 provider의 `url_private` 대신 `fileId`만 내려가고, "
+            "`GET /api/slack/file`이 서버에서 대신 받아 프록시합니다. "
+            "bot token을 프론트로 내보내지 않기 위해서입니다."
+        ),
     },
     {
-        "name": "현재 · AI 분석",
-        "description": "대화 붙여넣기 분석 시연 API.",
+        "name": "② 연동 · GitHub",
+        "description": (
+            "저장소 코드를 읽기 위한 PAT 등록. OAuth가 아니라 사용자가 토큰을 직접 "
+            "붙여넣고, Gmail·Slack 토큰과 같은 방식으로 암호화해 저장합니다. "
+            "사람마다 접근 가능한 저장소가 달라 서버 공용 토큰으로는 안 되기 때문입니다."
+        ),
     },
     {
-        "name": "현재 · 요구사항",
-        "description": "AI가 추출한 요구사항 조회와 사람의 상태 전이.",
+        "name": "③ 프로젝트",
+        "description": (
+            "계약 하나가 프로젝트 하나입니다. `DRAFT`로 만들고 계약이 체결되면 사람이 "
+            "`ACTIVE`로 올립니다(`PATCH .../status`). 계약 범위가 없으면 판정 기준이 "
+            "없어 요청이 전부 주황으로 나오므로, 시작 전에 `POST .../contract`로 "
+            "최초 계약을 등록하세요. `unansweredRequestCount`는 대응 대기 중인 요청 수입니다."
+        ),
     },
     {
-        "name": "현재 · 계약",
-        "description": "현재 계약 조회·최초 등록·합의된 변경분 반영.",
+        "name": "③ 수집 · 분석 실행",
+        "description": (
+            "**여기가 AI 파이프라인의 입구입니다.** source-link로 Gmail 상대 한 명 또는 "
+            "Slack 채널 하나를 프로젝트에 연결하고, sync를 부르면 원문을 저장한 뒤 "
+            "BackgroundTasks로 분석을 시작합니다. sync는 새 메시지 수와 run ID를 "
+            "즉시 돌려주므로, 결과는 잠시 뒤 ④에서 다시 조회하세요. "
+            "같은 메시지를 여러 번 sync해도 unique key로 한 번만 저장됩니다."
+        ),
     },
     {
-        "name": "현재 · 프로젝트",
-        "description": "프로젝트 목록·상세·소유권 필터와 프로젝트별 계약/요구사항.",
+        "name": "④ 요청 판정",
+        "description": (
+            "AI가 원문에서 뽑은 클라이언트 요청 카드입니다. 원문 한 건에 요청이 여러 개면 "
+            "여러 카드가 생깁니다. `aiDecisionStatus`가 3색 판정이고 `responseStatus`는 "
+            "사람이 대응했는지입니다 — **둘은 독립입니다.** "
+            "체크리스트·답변 초안은 생성만 하고 발송하지 않습니다."
+        ),
     },
     {
-        "name": "현재 · 요청·자료",
-        "description": "채널 원문 sync, AI 요청 판정, 자료 분류 결과.",
+        "name": "④ 요구사항 · 계약",
+        "description": (
+            "빨강(`EXTRA_REQUEST`) 판정에서 승격된 요구사항의 합의 흐름과 계약 반영입니다. "
+            "상태 전이는 규칙이라 코드가 검증하고, AI는 '합의'·'완료'·'거절'을 제안할 수 "
+            "없습니다. **계약을 바꾸는 통로는 `/contract/apply` 하나뿐**이며 그 안에 "
+            "합의 여부 검사가 있습니다. 같은 요구사항을 다시 반영해도 한 번만 적용됩니다."
+        ),
+    },
+    {
+        "name": "④ 붙여넣기 분석",
+        "description": (
+            "채널 연동 없이 대화를 그대로 붙여넣어 요구사항을 뽑는 경로입니다. "
+            "③의 sync 파이프라인과 다른 흐름이며, 결과는 3색 판정이 아니라 "
+            "요구사항 9상태입니다. `projectId`를 주면 그 프로젝트에 귀속됩니다."
+        ),
     },
 ]
 
 
 _TAG_NAMES = {
-    "auth": "현재 · 인증",
-    "email": "현재 · Gmail",
-    "slack": "현재 · Slack",
-    "analyze": "현재 · AI 분석",
-    "requirements": "현재 · 요구사항",
-    "contract": "현재 · 계약",
-    "projects": "현재 · 프로젝트",
+    "auth": "① 인증",
+    "email": "② 연동 · Gmail",
+    "slack": "② 연동 · Slack",
+    "github": "② 연동 · GitHub",
+    "project": "③ 프로젝트",
+    "projects": "③ 프로젝트",
+    "ingest": "③ 수집 · 분석 실행",
+    "request": "④ 요청 판정",
+    "agreement": "④ 요구사항 · 계약",
+    "requirements": "④ 요구사항 · 계약",
+    "contract": "④ 요구사항 · 계약",
+    "analyze": "④ 붙여넣기 분석",
 }
 
 _PUBLIC_OPERATIONS = {

@@ -90,6 +90,17 @@ class RequestExtractionResult(BaseModel):
     requests: list[ExtractedRequest] = Field(default_factory=list, max_length=5)
 
 
+class TicketMatch(BaseModel):
+    """요청 하나가 어느 기존 티켓에 붙는지. ticketId가 없으면 새 티켓이다."""
+
+    requestIndex: int = Field(ge=0)
+    ticketId: str | None = None
+
+
+class TicketMatchResult(BaseModel):
+    matches: list[TicketMatch] = Field(default_factory=list, max_length=5)
+
+
 class ContractMatchResult(BaseModel):
     """계약 대조 서브 에이전트의 결론.
 
@@ -101,6 +112,20 @@ class ContractMatchResult(BaseModel):
     reason: str = Field(default="", max_length=200)
     documentQuote: str = Field(default="", max_length=500)
     documentId: str = Field(default="", max_length=64)
+
+
+class TicketAdviceResult(BaseModel):
+    """티켓 솔루션의 AI 산출 부분.
+
+    근거 인용(basisQuote)은 코드가 실제 문서와 다시 대조한다. 관련 파일은 AI가
+    고르지 않는다 — 어떤 자료가 이 프로젝트에 있는지는 DB가 아는 사실이라
+    추론할 대상이 아니다.
+    """
+
+    adviceMessage: str = Field(max_length=600)
+    adviceReason: str = Field(max_length=400)
+    basisQuote: str = Field(default="", max_length=500)
+    basisDocumentId: str = Field(default="", max_length=64)
 
 
 class ChecklistResult(BaseModel):

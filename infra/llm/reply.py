@@ -10,7 +10,9 @@
 from collections.abc import Sequence
 
 from infra.llm.harness import run_json
-from infra.llm.prompts import CLARIFICATION_SYSTEM_PROMPT, REPLY_SYSTEM_PROMPT
+from infra.llm.prompts import (
+    CLARIFICATION_SYSTEM_PROMPT, REPLY_SYSTEM_PROMPT, resolve_reply_style,
+)
 from infra.llm.schemas import ClarificationQuestionsResult, RequirementReplyResult
 
 
@@ -53,7 +55,7 @@ async def build_reply(
         )
     user = (
         f"{requirement_text}\n\n"
-        f"## 말투\n{tone}\n\n"
+        f"## 말투\n{resolve_reply_style(tone) or tone}\n\n"
         f"## 사람이 정한 방향\n{intent or '없음'}\n\n"
         f"## 사람이 정한 금액·납기\n{settled}\n\n"
         f"## 담을 확인 질문\n{numbered or '없음'}"
