@@ -15,7 +15,9 @@ from pydantic import BaseModel, Field
 from pymongo.errors import DuplicateKeyError
 
 from app.auth import get_current_user
-from app.integration_store import access_token, latest_gmail_connection, slack_connection
+from app.integration_store import (
+    access_token, github_connection, latest_gmail_connection, slack_connection,
+)
 from app.public_data import public_material, public_project
 from app.requirement_sync import sync_requirements_from_requests
 from app.response import fail, ok
@@ -684,7 +686,12 @@ async def ask_git_repository(
     )
     if link is None or not link.repoFullName:
         return fail("먼저 이 프로젝트에 GitHub 저장소를 연결해 주세요.", 404)
-    answer = await ask_repository(repo_full_name=link.repoFullName, question=body.question)
+    # 사용자가 등록한 PAT를 먼저 쓰고, 없으면 서버 기본 토큰(공개 저장소)으로 떨어진다.
+    connection = await github_connection(str(current_user.id))
+    token = access_token(connection) if connection else None
+    answer = await ask_repository(
+        repo_full_name=link.repoFullName, question=body.question, token=token
+    )
     return ok({"answer": answer, "repoFullName": link.repoFullName})
 
 
@@ -715,9 +722,9 @@ async def sync_source_link(
             if connection is None:
                 return fail("Gmail이 연결되어 있지 않습니다.", 404)
             connection, token = await _gmail_connection_token(connection)
-            emails = await fetch_recent(access_token=token, max_messages=100)
-            if link.counterpartyEmail:
-                emails = [e for e in emails if e.from_.address.lower() == link.counterpartyEmail.lower() or any(r.address.lower() == link.counterpartyEmail.lower() for r in e.to)]
+            emails = await fetch_recent(
+                access_token=token, max_messages=50, counterparty=link.counterpartyEmail
+            )
             for email in emails:
                 if not email.body.strip():
                     continue

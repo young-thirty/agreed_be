@@ -6,7 +6,7 @@ from pydantic import Field
 from pymongo import ASCENDING, IndexModel
 
 
-Provider = Literal["gmail", "slack"]
+Provider = Literal["gmail", "slack", "github"]
 
 
 def utc_now() -> datetime:

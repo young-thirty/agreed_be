@@ -15,6 +15,7 @@ terraform -chdir="$TF_DIR" apply \
   -target=aws_secretsmanager_secret.google_client_secret \
   -target=aws_secretsmanager_secret.slack_client_secret \
   -target=aws_secretsmanager_secret.integration_token_key \
+  -target=aws_secretsmanager_secret.github_token \
   -auto-approve
 
 REGION="$(terraform -chdir="$TF_DIR" output -raw aws_region 2>/dev/null || awk -F'=' '/^[[:space:]]*aws_region[[:space:]]*=/{gsub(/[[:space:]\"]/, "", $2); print $2; exit}' "$TF_DIR/terraform.tfvars")"
@@ -56,8 +57,12 @@ put_secret "$(terraform -chdir="$TF_DIR" output -raw deepseek_secret_arn)" "$DEE
 put_secret "$(terraform -chdir="$TF_DIR" output -raw google_secret_arn)" "$GOOGLE_CLIENT_SECRET"
 put_secret "$(terraform -chdir="$TF_DIR" output -raw slack_secret_arn)" "$SLACK_CLIENT_SECRET"
 put_secret "$(terraform -chdir="$TF_DIR" output -raw integration_key_secret_arn)" "$INTEGRATION_TOKEN_KEY"
+# GitHub 기본 토큰은 선택이다. 사용자가 /api/github/connect로 자기 PAT를 등록하면
+# 그쪽이 우선하고, 둘 다 없으면 공개 저장소만 clone된다.
+put_secret "$(terraform -chdir="$TF_DIR" output -raw github_token_secret_arn)" "${GITHUB_TOKEN:-}"
 
 terraform -chdir="$TF_DIR" apply -auto-approve
 
 echo "배포 URL: $(terraform -chdir="$TF_DIR" output -raw apprunner_service_url)"
 echo "GitHub Actions role: $(terraform -chdir="$TF_DIR" output -raw github_actions_role_arn)"
+echo "자료 버킷: $(terraform -chdir="$TF_DIR" output -raw materials_bucket)"

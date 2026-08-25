@@ -130,10 +130,12 @@ def _build_tools(workspace: str) -> list[AgentTool]:
     ]
 
 
-async def ask_repository(*, repo_full_name: str, question: str) -> str:
+async def ask_repository(
+    *, repo_full_name: str, question: str, token: str | None = None
+) -> str:
     """레포에서 질문에 답한다. 클론·탐색·정리를 한 호출 안에서 마친다."""
     try:
-        async with cloned_repo(repo_full_name) as workspace:
+        async with cloned_repo(repo_full_name, token) as workspace:
             result = await run_agent(
                 system_prompt=GIT_EXPLORE_SYSTEM_PROMPT,
                 task=f"저장소: {repo_full_name}\n질문: {question}",
