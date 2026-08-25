@@ -77,6 +77,10 @@ GitHub repository 설정에 추가한다.
 `/api/health` HTTPS 확인까지 수행한다. GitHub OIDC role은 `main` 브랜치와 지정된
 저장소만 허용한다.
 
+2026-07-15 이후 생성된 GitHub 저장소는 OIDC `sub`에 immutable owner/repository ID가
+포함된다. `github_owner_id`와 `github_repository_id`는 GitHub API의 실제 ID를 넣어야
+하며, 저장소 이름만 사용한 이전 형식으로는 AWS role을 Assume할 수 없다.
+
 ## MongoDB Atlas 필수 설정
 
 App Runner에서 Atlas로 나갈 수 있도록 Atlas Network Access에 App Runner의 outbound

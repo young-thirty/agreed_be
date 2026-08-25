@@ -2,6 +2,8 @@ aws_region            = "ap-northeast-1"
 service_name          = "agreed-be"
 ecr_repository_name   = "agreed-be"
 github_repository     = "young-thirty/agreed_be"
+github_owner_id       = "<github-owner-id>"
+github_repository_id  = "<github-repository-id>"
 frontend_origin       = "https://<frontend-domain>"
 api_public_url        = "https://<app-runner-service-url>"
 

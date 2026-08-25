@@ -21,6 +21,16 @@ variable "github_repository" {
   description = "GitHub 저장소(owner/repo). main 브랜치만 배포 role을 사용할 수 있다."
 }
 
+variable "github_owner_id" {
+  type        = string
+  description = "GitHub immutable OIDC subject에 포함되는 owner ID"
+}
+
+variable "github_repository_id" {
+  type        = string
+  description = "GitHub immutable OIDC subject에 포함되는 repository ID"
+}
+
 variable "github_branch" {
   type        = string
   description = "배포를 허용할 브랜치"
