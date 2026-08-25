@@ -94,6 +94,7 @@ _PUBLIC_OPERATIONS = {
     ("/api/auth/signup", "post"),
     ("/api/auth/login", "post"),
     ("/api/auth/logout", "post"),
+    ("/api/auth/demo-session", "post"),
 }
 
 _OAUTH_CONNECT_OPERATIONS = {
@@ -161,6 +162,7 @@ _SUMMARY_BY_OPERATION = {
     ("/api/auth/signup", "post"): "회원가입 및 자동 로그인",
     ("/api/auth/login", "post"): "이메일·비밀번호 로그인",
     ("/api/auth/logout", "post"): "로그아웃",
+    ("/api/auth/demo-session", "post"): "개발용 시연 세션 발급",
     ("/api/auth/me", "get"): "현재 로그인 사용자 조회",
     ("/api/analyze", "post"): "대화에서 요구사항 추출",
     ("/api/contract", "get"): "현재 계약 조회",

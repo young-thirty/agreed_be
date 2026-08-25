@@ -29,6 +29,11 @@ docker run -d -p 27017:27017 --name agreed-mongo mongo
 로그인한 사용자에게 시연용 빈 프로젝트를 만들려면 Swagger의 `POST /api/projects`를
 사용하거나 `python scripts/seed_demo.py --email 가입이메일`을 실행합니다.
 
+로그인 화면이 아직 없으면 로컬 `.env`에 `DEMO_SESSION_ENABLED=true`를 넣고 서버를
+재시작한 뒤 Swagger의 `POST /api/auth/demo-session`을 실행합니다. 이 endpoint는
+복사할 bearer token을 만들지 않고 `agreed_session` HttpOnly 쿠키를 발급합니다.
+운영 환경에서는 반드시 `false`로 둡니다.
+
 설정 스크립트는 Google·Slack secret과 선택적인 DeepSeek 키를 화면에 표시하지
 않고 입력받아 `.env`에 저장하며, provider token 암호화 키를 자동 생성합니다.
 

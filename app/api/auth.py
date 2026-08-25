@@ -1,5 +1,7 @@
 """Agreed 이메일·비밀번호 로그인과 서버 측 세션."""
 
+import os
+import secrets
 from datetime import datetime
 from typing import Literal
 
@@ -50,6 +52,14 @@ class SignupRequest(LoginRequest):
         max_length=30,
         examples=["010-1234-5678"],
     )
+
+
+class DemoSessionRequest(BaseModel):
+    """화면 로그인 전 Swagger 시연용 입력. 운영에서는 비활성화한다."""
+
+    email: str = Field(default="demo@agreed.local", examples=["demo@agreed.local"])
+    name: str = Field(default="Agreed Demo", min_length=1, max_length=50)
+    phoneNumber: str = Field(default="010-0000-0000", min_length=1, max_length=30)
 
 
 class UserSummary(BaseModel):
@@ -188,6 +198,45 @@ async def signup(body: SignupRequest):
         await user.insert()
     except DuplicateKeyError:
         return fail("이미 가입된 이메일입니다.", 409)
+    return await _issue_session(user)
+
+
+@router.post(
+    "/demo-session",
+    response_model=AuthSuccessResponse,
+    summary="시연용 세션 발급(개발 환경 전용)",
+    responses={
+        403: {
+            "model": ErrorResponse,
+            "description": "시연 세션 비활성화",
+        },
+        422: VALIDATION_RESPONSE,
+    },
+)
+async def demo_session(body: DemoSessionRequest):
+    """로그인 화면이 아직 없을 때 Swagger에서 HttpOnly 세션을 만드는 임시 경로."""
+
+    enabled = os.environ.get("DEMO_SESSION_ENABLED", "false").strip().lower() == "true"
+    if not enabled:
+        return fail("시연 세션은 현재 비활성화되어 있습니다.", 403)
+    email = _normalize_email(body.email)
+    if email is None:
+        return fail("이메일 형식을 확인해 주세요.")
+    user = await User.find_one(User.email == email)
+    if user is None:
+        user = User(
+            name=body.name.strip(),
+            email=email,
+            phoneNumber=body.phoneNumber.strip(),
+            # 이 경로는 비밀번호 로그인을 우회하는 시연용 계정 생성이다.
+            passwordHash=await run_in_threadpool(hash_password, secrets.token_urlsafe(32)),
+        )
+        try:
+            await user.insert()
+        except DuplicateKeyError:
+            user = await User.find_one(User.email == email)
+            if user is None:
+                return fail("시연 계정을 만들지 못했습니다.", 500)
     return await _issue_session(user)
 
 

@@ -19,6 +19,7 @@ POST /api/auth/signup  { name, email, password, phoneNumber }
 POST /api/auth/login   { email, password }
 POST /api/auth/logout
 GET  /api/auth/me
+POST /api/auth/demo-session  (로컬 Swagger 시연 전용, 운영 비활성화)
 ```
 
 회원가입·로그인·현재 사용자 조회의 `data.user`는
@@ -26,6 +27,8 @@ GET  /api/auth/me
 만든 로컬 계정은 `phoneNumber`가 `null`일 수 있습니다.
 
 로그인은 소셜 로그인이 아닙니다. 로그인한 다음 Gmail·Slack을 별도로 연결합니다.
+로그인 화면을 붙이기 전에는 Swagger에서 `demo-session`을 한 번 실행하면 같은 브라우저에
+HttpOnly 세션 쿠키가 생겨 프론트 API를 바로 시험할 수 있습니다.
 
 ## OAuth 버튼
 

@@ -23,6 +23,7 @@ provider token은 백엔드에서만 다룹니다.
 ## 현재 구현
 
 - 자체 회원가입·로그인·로그아웃·현재 사용자 조회
+- 로그인 화면 전 로컬 Swagger 시연용 `POST /api/auth/demo-session` (운영 비활성화)
 - opaque session을 HttpOnly cookie로 발급하고 DB에는 hash만 저장
 - Contract·Requirement·IntegrationConnection을 로그인 사용자에게 귀속
 - Google authorization-code OAuth, refresh token 보관, Gmail 읽기
