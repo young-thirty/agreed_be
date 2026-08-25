@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 env:
-  AWS_REGION: ${{ vars.AWS_REGION || 'ap-northeast-2' }}
+  AWS_REGION: ${{ vars.AWS_REGION || 'ap-northeast-1' }}
   ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || 'agreed-be' }}
   APP_RUNNER_SERVICE_ARN: ${{ vars.APP_RUNNER_SERVICE_ARN }}
 
@@ -50,7 +50,7 @@ jobs:
           PY
 
       - name: Build container
-        run: docker build --tag agreed-be:ci .
+        run: docker build --platform linux/amd64 --tag agreed-be:ci .
 
       - name: Validate Terraform
         working-directory: deploy/terraform
@@ -93,6 +93,7 @@ jobs:
           IMAGE_TAG: ${{ github.sha }}
         run: |
           docker build \
+            --platform linux/amd64 \
             --tag "$REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" \
             --tag "$REGISTRY/$ECR_REPOSITORY:latest" .
           docker push "$REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"

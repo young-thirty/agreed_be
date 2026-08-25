@@ -13,6 +13,8 @@ GitHub main
 
 App Runner URL이 HTTPS로 바로 발급되므로 별도 EC2 reverse proxy나 인증서 서버를
 두지 않는다. App Runner 서비스는 0.25 vCPU / 0.5 GB, 최소 1개 인스턴스로 제한했다.
+App Runner는 서울 리전을 지원하지 않으므로 백엔드는 도쿄(`ap-northeast-1`)에 두고,
+MongoDB Atlas는 서울 리전을 그대로 사용한다.
 시연 종료 후 App Runner 서비스를 삭제하면 실행 비용은 멈추지만, ECR 이미지와
 Secrets Manager secret에는 별도 소액 비용이 남을 수 있으므로 함께 정리한다.
 
@@ -67,7 +69,7 @@ terraform -chdir=deploy/terraform output -raw apprunner_service_arn
 GitHub repository 설정에 추가한다.
 
 - Actions secret `AWS_ROLE_ARN`: `github_actions_role_arn` 출력값
-- Actions variable `AWS_REGION`: 예 `ap-northeast-2`
+- Actions variable `AWS_REGION`: `ap-northeast-1`
 - Actions variable `ECR_REPOSITORY`: `agreed-be`
 - Actions variable `APP_RUNNER_SERVICE_ARN`: `apprunner_service_arn` 출력값
 

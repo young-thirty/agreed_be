@@ -17,12 +17,19 @@ terraform -chdir="$TF_DIR" apply \
   -target=aws_secretsmanager_secret.integration_token_key \
   -auto-approve
 
-REGION="$(terraform -chdir="$TF_DIR" output -raw aws_region)"
+REGION="$(terraform -chdir="$TF_DIR" output -raw aws_region 2>/dev/null || awk -F'=' '/^[[:space:]]*aws_region[[:space:]]*=/{gsub(/[[:space:]\"]/, "", $2); print $2; exit}' "$TF_DIR/terraform.tfvars")"
 REPOSITORY_URL="$(terraform -chdir="$TF_DIR" output -raw ecr_repository_url)"
 
+: "${REGION:?terraform.tfvars의 aws_region이 필요합니다}"
+
 aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "$REPOSITORY_URL"
-docker build -t "$REPOSITORY_URL:latest" "$ROOT_DIR"
-docker push "$REPOSITORY_URL:latest"
+# App Runner 배포 이미지가 Apple Silicon 로컬 빌드(arm64)가 되지 않도록
+# AWS 런타임 호환 아키텍처를 명시한다.
+docker buildx build \
+  --platform linux/amd64 \
+  -t "$REPOSITORY_URL:latest" \
+  --push \
+  "$ROOT_DIR"
 
 if [[ -f "$ROOT_DIR/.env" ]]; then
   set -a
