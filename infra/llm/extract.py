@@ -17,9 +17,15 @@ from infra.llm.schemas import ExtractResult
 from models.requirement import Requirement
 
 
-async def _call_model(utterances: Sequence, retry_hint: str | None = None) -> ExtractResult:
+async def _call_model(
+    utterances: Sequence,
+    context: str,
+    retry_hint: str | None = None,
+) -> ExtractResult:
     """L1: JSON mode로 받아 Pydantic으로 검증한다."""
     conversation = build_conversation_text(utterances)
+    if context:
+        conversation = f"{context}\n{conversation}"
     if retry_hint:
         conversation += (
             f"\n\n[이전 응답이 검증에 실패했다: {retry_hint}. 스키마에 맞게 다시 출력해라.]"
@@ -28,6 +34,9 @@ async def _call_model(utterances: Sequence, retry_hint: str | None = None) -> Ex
     response = await get_client().chat.completions.create(
         model=EXTRACT_MODEL,
         response_format={"type": "json_object"},
+        # 추출은 창작이 아니다. 기본값(1.0)으로 두면 같은 대화에서도 결과가
+        # 흔들려, 맥락을 줘도 요구사항을 놓치는 일이 생긴다.
+        temperature=0,
         messages=[
             {"role": "system", "content": EXTRACT_SYSTEM_PROMPT},
             {"role": "user", "content": conversation},
@@ -40,16 +49,16 @@ async def _call_model(utterances: Sequence, retry_hint: str | None = None) -> Ex
     return ExtractResult.model_validate(json.loads(content))
 
 
-async def _extract_with_retry(utterances: Sequence) -> ExtractResult:
+async def _extract_with_retry(utterances: Sequence, context: str) -> ExtractResult:
     """검증에 실패하면 오류를 덧붙여 1회만 재시도한다. 그래도 실패하면 빈 결과다.
 
     무한 재시도는 하지 않는다. 사용자를 오래 기다리게 하지 않기 위해서다.
     """
     try:
-        return await _call_model(utterances)
+        return await _call_model(utterances, context)
     except Exception as first_error:
         try:
-            return await _call_model(utterances, retry_hint=str(first_error))
+            return await _call_model(utterances, context, retry_hint=str(first_error))
         except Exception:
             return ExtractResult(items=[])
 
@@ -57,8 +66,13 @@ async def _extract_with_retry(utterances: Sequence) -> ExtractResult:
 async def extract_requirements(
     utterances: Sequence,
     existing: Sequence[Requirement] = (),
-) -> list[RequirementState]:
+    context: str = "",
+) -> list[tuple[str | None, RequirementState]]:
     """대화에서 요구사항을 뽑아 검증까지 마친 목록을 돌려준다.
+
+    (기존 요구사항 id, 요구사항) 쌍으로 돌려준다. id가 있으면 그 카드를
+    갱신하라는 뜻이고, None이면 새 카드다. 호출부가 제목만 보고 같은
+    요구사항인지 짐작하지 않게 하려고 여기서 짝을 지어 넘긴다.
 
     existing은 재분석 대상이다. 모델이 existingId로 기존 카드를 가리키면 그
     카드의 현재 status를 demote의 기준으로 쓴다. 신규 항목은 '미확정'에서
@@ -71,10 +85,10 @@ async def extract_requirements(
     if result is None:
         if not has_api_key():
             return []
-        result = await _extract_with_retry(utterances)
+        result = await _extract_with_retry(utterances, context)
 
     existing_by_id = {str(r.id): r for r in existing}
-    requirements: list[RequirementState] = []
+    requirements: list[tuple[str | None, RequirementState]] = []
 
     for item in result.items:
         # L2: 근거가 전부 허구면 항목을 버린다. 일부만 실패하면 나머지는 살린다.
@@ -89,18 +103,21 @@ async def extract_requirements(
         current_status = previous.status if previous else "미확정"
 
         requirements.append(
-            RequirementState(
-                title=item.title,
-                # L3: 이전 상태에서 도달 불가능하면 거부하지 않고 '미확정'으로 내린다.
-                status=demote(current_status, item.proposedStatus),
-                evidence=grounded,
-                basis=previous.basis if previous else {"kind": "없음"},
-                aiProposedDecision=(
-                    None
-                    if item.proposedDecision is None
-                    else item.proposedDecision.model_dump()
+            (
+                str(previous.id) if previous is not None else None,
+                RequirementState(
+                    title=item.title,
+                    # L3: 이전 상태에서 도달 불가능하면 거부하지 않고 '미확정'으로 내린다.
+                    status=demote(current_status, item.proposedStatus),
+                    evidence=grounded,
+                    basis=previous.basis if previous else {"kind": "없음"},
+                    aiProposedDecision=(
+                        None
+                        if item.proposedDecision is None
+                        else item.proposedDecision.model_dump()
+                    ),
+                    decision=previous.decision if previous else None,
                 ),
-                decision=previous.decision if previous else None,
             )
         )
 
