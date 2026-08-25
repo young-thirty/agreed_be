@@ -8,7 +8,7 @@
 """
 
 from infra.llm.harness import run_json
-from infra.llm.prompts import REPLY_DRAFT_SYSTEM_PROMPT
+from infra.llm.prompts import REPLY_DRAFT_SYSTEM_PROMPT, resolve_reply_style
 from infra.llm.schemas import ReplyDraftResult
 
 FALLBACK_BODY = "요청 내용을 확인했습니다. 세부 사항은 확인 후 다시 안내드리겠습니다."
@@ -17,8 +17,11 @@ FALLBACK_BODY = "요청 내용을 확인했습니다. 세부 사항은 확인 �
 async def build_reply_draft(
     *, summary_title: str, selected_items: list[str], tone: str = "professional"
 ) -> str:
+    style = resolve_reply_style(tone)
+    if style is None:
+        raise ValueError("지원하지 않는 답변 말투입니다.")
     items_text = "\n".join(f"- {item}" for item in selected_items) or "(선택된 확인 항목 없음)"
-    task = f"요청 요약: {summary_title}\n요청 톤: {tone}\n\n반영할 확인 항목:\n{items_text}"
+    task = f"요청 요약: {summary_title}\n말투 지침: {style}\n\n반영할 확인 항목:\n{items_text}"
 
     result = await run_json(
         system_prompt=REPLY_DRAFT_SYSTEM_PROMPT,

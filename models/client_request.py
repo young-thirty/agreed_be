@@ -6,7 +6,7 @@ from pymongo import ASCENDING, DESCENDING, IndexModel
 
 from core.project_data import (
     AiDecisionStatus, ClientRequestSummary, DocumentEvidence, ProcessingStatus,
-    RequestEvidence, SourceChannel, TicketSolution, TicketStatus,
+    RequestEvidence, SourceChannel, TicketCategory, TicketSolution, TicketStatus,
 )
 
 
@@ -23,6 +23,8 @@ class ClientRequest(Document):
     sourceMessageIds: list[PydanticObjectId] = Field(default_factory=list)
     analysisRunId: PydanticObjectId | None = None
     requestOrdinal: int = Field(ge=0)
+    # API 식별자는 id이고, ticketCode는 화면에 보여주는 짧은 번호다.
+    ticketCode: str | None = Field(default=None, max_length=32)
     sourceChannel: SourceChannel
     senderDisplay: str | None = None
     occurredAt: datetime
@@ -31,6 +33,9 @@ class ClientRequest(Document):
     aiDecisionStatus: AiDecisionStatus | None = None
     # 사람이 검증할 수 있는 짧은 판단 이유. 내부 추론 과정은 저장하지 않는다.
     decisionReason: str | None = Field(default=None, max_length=200)
+    category: TicketCategory = "일반 질문"
+    requirement: str = Field(default="", max_length=500)
+    currentSummary: str = Field(default="", max_length=1000)
     ticketStatus: TicketStatus = "active"
     requestEvidence: list[RequestEvidence] = Field(default_factory=list)
     documentEvidence: list[DocumentEvidence] = Field(default_factory=list)
@@ -44,14 +49,29 @@ class ClientRequest(Document):
         indexes = [
             IndexModel([("ownerId", ASCENDING), ("projectId", ASCENDING), ("occurredAt", DESCENDING)]),
             IndexModel([("ownerId", ASCENDING), ("projectId", ASCENDING), ("ticketStatus", ASCENDING)]),
+            IndexModel(
+                [("ownerId", ASCENDING), ("ticketCode", ASCENDING)],
+                unique=True,
+                partialFilterExpression={"ticketCode": {"$type": "string"}},
+            ),
             IndexModel([("ownerId", ASCENDING), ("sourceMessageId", ASCENDING), ("requestOrdinal", ASCENDING)], unique=True),
         ]
 
 
+def ticket_code(item: ClientRequest) -> str:
+    """기존 문서는 코드가 없으므로 ObjectId에서 안정적인 표시값을 만든다."""
+
+    return item.ticketCode or f"TCK-{str(item.id)[-6:].upper()}"
+
+
 def public_client_request(item: ClientRequest) -> dict:
     return ClientRequestSummary(
-        requestId=str(item.id), projectId=str(item.projectId), sourceChannel=item.sourceChannel,
+        requestId=str(item.id), ticketId=str(item.id), ticketCode=ticket_code(item),
+        projectId=str(item.projectId), sourceChannel=item.sourceChannel,
         senderDisplay=item.senderDisplay, occurredAt=item.occurredAt,
         aiProcessingStatus=item.aiProcessingStatus, summaryTitle=item.summaryTitle,
         aiDecisionStatus=item.aiDecisionStatus, ticketStatus=item.ticketStatus,
+        category=item.category, requirement=item.requirement,
+        currentSummary=item.currentSummary or item.decisionReason or "",
+        createdAt=item.createdAt, updatedAt=item.updatedAt,
     ).model_dump(mode="json")

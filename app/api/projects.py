@@ -30,7 +30,7 @@ from core.contract_ops import apply_to_contract, diff_contract
 from core.domain import ContractState
 from core.project_data import (
     DocumentType, ProcessingStatus, ProjectSort, ProjectStatus,
-    RelatedFile, SourceChannel, TicketSolution, TicketStatus,
+    RelatedFile, SourceChannel, TicketCategory, TicketSolution, TicketStatus,
 )
 from infra.integrations import IntegrationError
 from infra.integrations.gmail import (
@@ -48,7 +48,7 @@ from infra.security.provider_tokens import TokenEncryptionError
 from infra.storage.s3 import get_object, has_s3, put_object
 from models import (
     AnalysisRun, ClientRequest, Contract, Project, ProjectMaterial,
-    ProjectSourceLink, Requirement, SourceMessage,
+    ProjectSourceLink, Requirement, SourceMessage, TicketDecision,
 )
 from models.client_request import public_client_request
 from models.integration import IntegrationConnection
@@ -153,6 +153,37 @@ async def _unanswered_count(project_id: PydanticObjectId, owner_id: PydanticObje
     ).count()
 
 
+async def _project_card(project: Project, owner_id: PydanticObjectId) -> dict:
+    """프로토타입 목록이 요구하는 마지막 메시지와 GitHub 연결을 함께 준다."""
+
+    unanswered = await _unanswered_count(project.id, owner_id)
+    data = public_project(project, unanswered)
+    github = await ProjectSourceLink.find_one(
+        ProjectSourceLink.ownerId == owner_id,
+        ProjectSourceLink.projectId == project.id,
+        ProjectSourceLink.sourceChannel == "GITHUB",
+    )
+    last_message = await SourceMessage.find_one(
+        SourceMessage.ownerId == owner_id,
+        SourceMessage.projectId == project.id,
+        SourceMessage.direction == "RECEIVED",
+        sort=[("occurredAt", -1)],
+    )
+    data.update({
+        "clientEmail": project.clientEmail or "",
+        "githubRepo": github.repoFullName if github else None,
+        "lastMessage": last_message.rawText.strip() if last_message else "",
+        "lastMessageAt": (
+            last_message.occurredAt.isoformat()
+            + ("Z" if last_message.occurredAt.tzinfo is None else "")
+            if last_message else data["updatedAt"]
+        ),
+        "activeTicketCount": unanswered,
+        "unansweredMessageCount": unanswered,
+    })
+    return data
+
+
 async def _project_or_404(project_id: PydanticObjectId, user: User | None):
     if user is None:
         return None, fail("로그인이 필요합니다.", 401)
@@ -173,7 +204,7 @@ async def create_project(body: ProjectCreateRequest, current_user: User | None =
         status=body.status, statusRank=_status_rank(body.status),
     )
     await project.insert()
-    return ok(public_project(project))
+    return ok(await _project_card(project, current_user.id))
 
 
 @router.get("/projects", tags=["project"])
@@ -194,10 +225,7 @@ async def list_projects(
         projects.sort(key=lambda p: p.updatedAt, reverse=True)
     else:
         projects.sort(key=lambda p: p.createdAt, reverse=True)
-    return ok([
-        public_project(project, await _unanswered_count(project.id, current_user.id))
-        for project in projects
-    ])
+    return ok([await _project_card(project, current_user.id) for project in projects])
 
 
 @router.get("/projects/{project_id}", tags=["project"])
@@ -205,7 +233,7 @@ async def project_detail(project_id: PydanticObjectId, current_user: User | None
     project, error = await _project_or_404(project_id, current_user)
     if error:
         return error
-    return ok(public_project(project, await _unanswered_count(project.id, current_user.id)))
+    return ok(await _project_card(project, current_user.id))
 
 
 @router.patch("/projects/{project_id}", tags=["project"])
@@ -225,7 +253,7 @@ async def update_project(
     project.contractPrice = body.contractPrice
     project.updatedAt = _now()
     await project.save()
-    return ok(public_project(project, await _unanswered_count(project.id, current_user.id)))
+    return ok(await _project_card(project, current_user.id))
 
 
 @router.patch("/projects/{project_id}/status", tags=["project"])
@@ -240,7 +268,7 @@ async def update_project_status(
     project.statusRank = _status_rank(body.status)
     project.updatedAt = _now()
     await project.save()
-    return ok(public_project(project, await _unanswered_count(project.id, current_user.id)))
+    return ok(await _project_card(project, current_user.id))
 
 
 @router.get("/projects/{project_id}/requests", tags=["request"])
@@ -278,7 +306,11 @@ async def request_detail(request_id: PydanticObjectId, current_user: User | None
 
 class ReplyDraftRequest(BaseModel):
     selectedItems: list[str] = Field(default_factory=list, max_length=6)
-    tone: Literal["friendly", "professional", "concise", "firm"] = "professional"
+    tone: Literal[
+        "base", "friendly", "short", "firm",
+        "professional", "concise", "plain", "polite", "witty",
+    ] = "base"
+    sourceMessageId: PydanticObjectId | None = None
 
 
 class TicketStatusRequest(BaseModel):
@@ -407,6 +439,16 @@ async def request_reply_draft(
     reply = await build_reply_draft(
         summary_title=item.summaryTitle or "", selected_items=selected, tone=body.tone
     )
+    if body.sourceMessageId is not None:
+        decision = await TicketDecision.find_one(
+            TicketDecision.ownerId == current_user.id,
+            TicketDecision.requestId == item.id,
+            TicketDecision.sourceMessageId == body.sourceMessageId,
+        )
+        if decision is not None:
+            decision.drafts[body.tone] = reply
+            decision.updatedAt = _now()
+            await decision.save()
     return ok({"body": reply})
 
 
@@ -776,6 +818,23 @@ async def _attach_to_ticket(
     await ticket.save()
 
 
+def _category_from_title(title: str) -> TicketCategory:
+    """LLM 결과에 아직 카테고리가 없을 때 쓰는 결정적 폴백."""
+
+    normalized = title.replace(" ", "").lower()
+    if any(word in normalized for word in ("오류", "버그", "안돼", "실패")):
+        return "버그"
+    if any(word in normalized for word in ("일정", "언제", "납기")):
+        return "일정 문의"
+    if any(word in normalized for word in ("계약", "견적", "비용", "금액")):
+        return "계약 문의"
+    if any(word in normalized for word in ("디자인", "색상", "문구", "배너")):
+        return "디자인 수정"
+    if any(word in normalized for word in ("추가", "기능", "개발", "구현")):
+        return "기능 요청"
+    return "일반 질문"
+
+
 async def _save_client_requests(
     message: SourceMessage, run: AnalysisRun, analyzed: list[AnalyzedRequest]
 ) -> None:
@@ -807,6 +866,9 @@ async def _save_client_requests(
             summaryTitle=item.summaryTitle,
             aiDecisionStatus=item.decision,
             decisionReason=item.reason or None,
+            category=_category_from_title(item.summaryTitle),
+            requirement=item.summaryTitle,
+            currentSummary=item.reason or item.summaryTitle,
             requestEvidence=(
                 [{"quote": item.requestQuote, "sourceMessageId": str(message.id)}]
                 if item.requestQuote

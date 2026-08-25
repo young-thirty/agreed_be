@@ -123,7 +123,7 @@ API가 많아 보이지만 **네 묶음**입니다. 위에서 아래로 한 방�
 - 금액·납기·수락 여부를 결정하지 않습니다
 - 요구사항 상태를 '합의'·'완료'·'거절'로 제안하지 않습니다 (스키마에서 막힙니다)
 - 계약을 직접 수정하지 않습니다
-- 메일을 발송하지 않습니다 (답변 초안 **생성**까지만)
+- `mark-sent`는 화면 상태만 저장하고 Gmail·Slack으로 실제 발송하지 않습니다
 
 모델이 만든 인용문은 코드가 원문과 다시 대조하고, 지어낸 인용이면 근거를 버린
 뒤 판정을 주황으로 내립니다.
@@ -204,7 +204,8 @@ OPENAPI_TAGS = [
             "AI가 원문에서 뽑은 클라이언트 요청 카드입니다. 원문 한 건에 요청이 여러 개면 "
             "여러 카드가 생깁니다. `aiDecisionStatus`가 3색 판정이고 `responseStatus`는 "
             "사람이 대응했는지입니다 — **둘은 독립입니다.** "
-            "체크리스트·답변 초안은 생성만 하고 발송하지 않습니다."
+            "`GET /api/tickets`는 최신 화면 DTO를 한 번에 주고, 처리 방식·확정값·"
+            "발송 표시를 MongoDB에 저장합니다. 답변 초안과 mark-sent는 실제 채널 발송이 아닙니다."
         ),
     },
     {
@@ -290,6 +291,10 @@ _ERROR_STATUS_BY_OPERATION: dict[tuple[str, str], tuple[int, ...]] = {
     ("/api/requests/{request_id}", "get"): (401, 404, 422),
     ("/api/requests/{request_id}/checklist", "post"): (401, 404, 422),
     ("/api/requests/{request_id}/reply-draft", "post"): (401, 404, 422),
+    ("/api/tickets", "get"): (401, 422),
+    ("/api/tickets/{ticket_id}", "get"): (401, 404, 422),
+    ("/api/requests/{request_id}/decision", "post"): (400, 401, 404, 409, 422),
+    ("/api/requests/{request_id}/mark-sent", "post"): (401, 404, 409, 422),
     ("/api/requests/{request_id}/response-status", "patch"): (401, 404, 422),
     ("/api/projects/{project_id}/materials", "get"): (401, 404, 422),
     ("/api/projects/{project_id}/materials/{material_id}", "patch"): (401, 404, 422),
@@ -348,6 +353,10 @@ _SUMMARY_BY_OPERATION = {
     ("/api/requests/{request_id}", "get"): "요청 상세 및 근거 조회",
     ("/api/requests/{request_id}/checklist", "post"): "답변 전 확인 항목 생성",
     ("/api/requests/{request_id}/reply-draft", "post"): "답변 초안 생성",
+    ("/api/tickets", "get"): "프로토타입용 티켓 일감 목록 조회",
+    ("/api/tickets/{ticket_id}", "get"): "프로토타입용 티켓 상세 조회",
+    ("/api/requests/{request_id}/decision", "post"): "메시지 처리 방식·확정값 저장",
+    ("/api/requests/{request_id}/mark-sent", "post"): "답변 발송 완료 표시",
     ("/api/requests/{request_id}/response-status", "patch"): "요청 대응 상태 변경",
     ("/api/projects/{project_id}/materials", "get"): "프로젝트 자료 목록 조회",
     ("/api/projects/{project_id}/materials/{material_id}", "patch"): "자료를 티켓에 할당·해제",

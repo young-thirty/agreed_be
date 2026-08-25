@@ -17,6 +17,11 @@ AiDecisionStatus = Literal[
 # 티켓 상태. pending은 두지 않는다 — active와의 경계가 사람마다 달라
 # 아무도 쓰지 않는 상태가 된다. 전이는 사람만 하고 AI는 제안하지 않는다.
 TicketStatus = Literal["active", "done", "rejected"]
+TicketCategory = Literal[
+    "기능 요청", "버그", "일반 질문", "계약 문의", "일정 문의", "디자인 수정",
+]
+TicketHandling = Literal["link", "create", "ignore"]
+WorkStage = Literal["to_analyze", "to_reply", "waiting", "idle"]
 Direction = Literal["RECEIVED", "SENT"]
 DocumentType = Literal["PROPOSAL", "CONTRACT", "REQUIREMENTS", "MEETING_NOTES", "OTHER"]
 MaterialOrigin = Literal["CHANNEL", "MANUAL"]
@@ -48,6 +53,8 @@ class ProjectSummary(BaseModel):
 
 class ClientRequestSummary(BaseModel):
     requestId: str
+    ticketId: str
+    ticketCode: str
     projectId: str
     sourceChannel: SourceChannel
     senderDisplay: str | None = None
@@ -56,6 +63,11 @@ class ClientRequestSummary(BaseModel):
     summaryTitle: str | None = None
     aiDecisionStatus: AiDecisionStatus | None = None
     ticketStatus: TicketStatus
+    category: TicketCategory
+    requirement: str
+    currentSummary: str
+    createdAt: datetime
+    updatedAt: datetime
 
 
 class ProjectMaterialSummary(BaseModel):

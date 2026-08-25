@@ -8,6 +8,7 @@ from models.requirement import Requirement
 from models.session import Session
 from models.source_link import ProjectSourceLink
 from models.source_message import SourceMessage
+from models.ticket_decision import TicketDecision
 from models.user import User
 
 # init_beanie에 넘길 목록. 새 Document를 만들면 여기에 추가한다.
@@ -19,6 +20,7 @@ DOCUMENT_MODELS = [
     ProjectSourceLink,
     SourceMessage,
     ClientRequest,
+    TicketDecision,
     ProjectMaterial,
     AnalysisRun,
     Requirement,
@@ -31,6 +33,7 @@ __all__ = [
     "ProjectSourceLink",
     "SourceMessage",
     "ClientRequest",
+    "TicketDecision",
     "ProjectMaterial",
     "AnalysisRun",
     "IntegrationConnection",
