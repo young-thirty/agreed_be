@@ -228,8 +228,15 @@ P0/P1 구현: Project/Request/Material 모델 → 목록·상세 API → unanswe
 Contract/Requirement projectId → 시연 seed → Gmail 상대 1개·Slack channel 1개 sync
 → DeepSeek 요청 분석·자료 분류. (완료)
 
-보류: Slack Events/Gmail history/watch, worker queue, pagination/검색/실시간 전송, 범용
-첨부·S3/OCR(Gmail 첨부는 아직 attachmentRefs가 비어 있음), 수동 업로드 처리,
-요청 근거 상세 DTO의 공식 확정(현재 `GET /api/requests/{id}`가 비공식으로 내려줌),
-답장 실제 발송(초안 생성까지만), 감사 로그, REJECTED 상태. 기존 ContractDiff와
-합의 후 apply는 project 범위로 유지한다.
+Git 탐색 서브 에이전트(`POST /api/projects/{id}/git/ask`)와 Slack 파일의 S3 원본
+저장(`ProjectMaterial.storageKey`)을 추가했다. `SourceChannel`에 `GITHUB`이 늘었다.
+레포 연결은 OAuth가 아니라 서버 `GITHUB_TOKEN`(PAT)으로 clone하며, source-link의
+`repoFullName`("owner/repo")만 있으면 된다. 워크스페이스는 질문마다 얕게 clone하고
+답변 후 지운다 — 캐시하지 않는다. S3는 버킷 미설정 시 조용히 건너뛴다.
+
+보류: Slack Events/Gmail history/watch, worker queue, pagination/검색/실시간 전송,
+OCR·텍스트 추출(원본은 S3에 저장하지만 ProjectMaterial.extractedText 채우는 것은 별도),
+Gmail 첨부(attachmentRefs 비어 있음), 수동 업로드 처리, git 탐색 결과를 요청 판정에
+자동으로 엮는 것(현재는 독립 호출), 요청 근거 상세 DTO의 공식 확정(현재
+`GET /api/requests/{id}`가 비공식으로 내려줌), 답장 실제 발송(초안 생성까지만),
+감사 로그, REJECTED 상태. 기존 ContractDiff와 합의 후 apply는 project 범위로 유지한다.

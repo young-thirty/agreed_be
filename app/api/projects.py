@@ -29,16 +29,18 @@ from infra.integrations import IntegrationError
 from infra.integrations.gmail import (
     GMAIL_SCOPES, fetch_recent, refresh_access_token,
 )
-from infra.integrations.slack import fetch_history
+from infra.integrations.slack import fetch_file, fetch_history
 from infra.llm.client import EXTRACT_MODEL, has_api_key
 from infra.llm.harness import run_json
 from infra.llm.orchestrator import AnalyzedRequest, analyze_request_message
 from infra.llm.subagents.checklist import build_checklist
+from infra.llm.subagents.git_explore import ask_repository
 from infra.llm.subagents.reply_draft import build_reply_draft
 from infra.llm.prompts import PROJECT_MATERIAL_SYSTEM_PROMPT, build_requirement_text
 from infra.llm.reply import build_questions, build_reply
 from infra.llm.schemas import MaterialClassificationResult
 from infra.security.provider_tokens import TokenEncryptionError
+from infra.storage.s3 import has_s3, put_object
 from models import (
     AnalysisRun, ClientRequest, Contract, Project, ProjectMaterial,
     ProjectSourceLink, Requirement, SourceMessage,
@@ -107,7 +109,13 @@ class SourceLinkRequest(BaseModel):
     threadId: str | None = None
     teamId: str | None = None
     channelId: str | None = None
+    # GITHUB 전용. "owner/repo" 형식이다.
+    repoFullName: str | None = None
     locatorKey: str = Field(min_length=1, max_length=300)
+
+
+class GitAskRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=2000)
 
 
 class ContractApplyRequest(BaseModel):
@@ -383,13 +391,19 @@ async def create_source_link(
         if connection is None or (body.connectionId and connection.externalId != body.connectionId):
             return fail("연결된 Gmail 계정을 찾을 수 없습니다.", 404)
         body.connectionId = connection.externalId
-    else:
+    elif body.sourceChannel == "SLACK":
         if not body.teamId or not body.channelId:
             return fail("Slack 링크에는 teamId와 channelId가 필요합니다.")
         connection = await slack_connection(owner_id, body.teamId)
         if connection is None:
             return fail("연결된 Slack 워크스페이스를 찾을 수 없습니다.", 404)
         body.connectionId = body.connectionId or connection.externalId
+    else:
+        # GITHUB. OAuth 연동이 아니라 서버 GITHUB_TOKEN으로 clone하므로
+        # provider 연결 확인이 필요 없다. 형식만 검증한다.
+        if not body.repoFullName or body.repoFullName.count("/") != 1:
+            return fail("레포 이름은 owner/repo 형식이어야 합니다.")
+        body.locatorKey = body.repoFullName
     link = ProjectSourceLink(ownerId=current_user.id, projectId=project.id, **body.model_dump())
     try:
         await link.insert()
@@ -647,6 +661,50 @@ async def classify_material_run(run_id: str):
         await run.save()
 
 
+async def _store_material_original(material: ProjectMaterial, connection_id: str) -> None:
+    """Slack 원본 파일을 한 번만 내려받아 S3에 올린다.
+
+    실패해도 예외를 위로 던지지 않는다. 원본 저장은 부가 기능이라, 이게
+    실패한다고 자료 등록·분류까지 막히면 안 된다.
+    """
+    try:
+        connection = await slack_connection(str(material.ownerId), material.connectionId or connection_id)
+        # sync 호출부가 이미 연결을 확인했지만, 이 함수는 독립적으로도 안전해야 한다.
+        if connection is None or not material.providerFileId:
+            return
+        downloaded = await fetch_file(bot_token=access_token(connection), file_id=material.providerFileId)
+    except Exception:
+        return
+    key = f"materials/{material.ownerId}/{material.projectId}/{material.id}/{downloaded.fileName}"
+    stored_key = put_object(key, downloaded.content, downloaded.contentType)
+    if stored_key is None:
+        return
+    material.storageKey = stored_key
+    material.mimeType = downloaded.contentType
+    material.sizeBytes = len(downloaded.content)
+    material.updatedAt = _now()
+    await material.save()
+
+
+@router.post("/projects/{project_id}/git/ask")
+async def ask_git_repository(
+    project_id: PydanticObjectId, body: GitAskRequest,
+    current_user: User | None = Depends(get_current_user),
+):
+    project, error = await _project_or_404(project_id, current_user)
+    if error:
+        return error
+    link = await ProjectSourceLink.find_one(
+        ProjectSourceLink.ownerId == current_user.id,
+        ProjectSourceLink.projectId == project.id,
+        ProjectSourceLink.sourceChannel == "GITHUB",
+    )
+    if link is None or not link.repoFullName:
+        return fail("먼저 이 프로젝트에 GitHub 저장소를 연결해 주세요.", 404)
+    answer = await ask_repository(repo_full_name=link.repoFullName, question=body.question)
+    return ok({"answer": answer, "repoFullName": link.repoFullName})
+
+
 @router.post("/projects/{project_id}/source-links/{source_link_id}/sync")
 async def sync_source_link(
     project_id: PydanticObjectId, source_link_id: PydanticObjectId,
@@ -664,6 +722,10 @@ async def sync_source_link(
         return fail("연결 대상을 찾을 수 없습니다.", 404)
     new_count = 0
     run_ids: list[str] = []
+    if link.sourceChannel == "GITHUB":
+        return fail(
+            "GitHub 연결은 동기화 대신 /git/ask로 질문하세요.", 400
+        )
     try:
         if link.sourceChannel == "GMAIL":
             connection = await latest_gmail_connection(str(current_user.id))
@@ -718,14 +780,20 @@ async def sync_source_link(
                             fileName=file.name, direction="RECEIVED", communicatedAt=message.occurredAt,
                             contentHash=_hash(file.fileId), classificationStatus="PENDING",
                         )
+                        created_material = True
                         try:
                             await material.insert()
                         except DuplicateKeyError:
+                            created_material = False
                             material = await ProjectMaterial.find_one(
                                 ProjectMaterial.ownerId == current_user.id,
                                 ProjectMaterial.connectionId == connection.externalId,
                                 ProjectMaterial.providerFileId == file.fileId,
                             )
+                        # 새로 만든 자료만 원본을 내려받는다. 이미 있던 자료를
+                        # 재동기화 때마다 다시 내려받지 않는다.
+                        if material and created_material and has_s3():
+                            await _store_material_original(material, connection.externalId)
                         if material:
                             material_run = await _ensure_material_run(material)
                             background_tasks.add_task(classify_material_run, str(material_run.id))
