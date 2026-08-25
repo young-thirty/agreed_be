@@ -44,6 +44,9 @@ REQUIREMENT_STATUS: tuple[RequirementStatus, ...] = (
 # 카카오톡은 공개 API가 없어 자동 수집이 불가능하므로 채널로 두지 않는다.
 Channel = Literal["이메일", "슬랙"]
 
+# 답변 초안의 말투. 같은 내용을 관계와 상황에 맞게 다르게 표현한다.
+Tone = Literal["friendly", "professional", "concise", "firm"]
+
 
 class Utterance(BaseModel):
     """발화 단위. L0(발화 분할)의 산출물이다.

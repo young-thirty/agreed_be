@@ -42,6 +42,18 @@ class ExtractResult(BaseModel):
     items: list[ExtractedItem]
 
 
+class ClarificationQuestionsResult(BaseModel):
+    """답변 전에 클라이언트에게 되물을 확인 질문."""
+
+    questions: list[str] = Field(min_length=1, max_length=6)
+
+
+class ReplyDraftResult(BaseModel):
+    """고객에게 보낼 답변 초안. 사람이 그대로 읽고 고칠 수 있어야 한다."""
+
+    draft: str = Field(min_length=1, max_length=4000)
+
+
 class RequestAnalysisResult(BaseModel):
     summaryTitle: str = Field(max_length=80)
     decision: AiDecisionStatus

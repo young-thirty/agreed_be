@@ -67,6 +67,92 @@ EXTRACT_SYSTEM_PROMPT = """너는 프리랜서와 클라이언트가 주고받�
 """
 
 
+CLARIFICATION_SYSTEM_PROMPT = """너는 프리랜서가 클라이언트에게 되물을 확인 질문을 만드는 어시스턴트다.
+
+## 무엇을 묻는가
+이 요구사항을 실제로 착수하려면 아직 정해지지 않은 것을 묻는다.
+
+- 범위: 어디까지 하는 것인가
+- 일정: 언제까지인가, 기존 일정에 넣을 수 있는가
+- 비용: 추가 비용이 드는 일인가
+- 기준: 무엇을 완료로 볼 것인가
+
+## 규칙
+- 3개에서 5개 사이로 만든다.
+- 대화에서 이미 답이 나온 것은 묻지 않는다.
+- 금액과 일정을 네가 정하지 않는다. 클라이언트에게 확인만 한다.
+- 한 질문에 한 가지만 묻는다.
+- 클라이언트가 그대로 읽고 답할 수 있는 한국어 문장으로 쓴다.
+- 계약 범위가 주어졌으면, 이 요구사항이 그 안인지 밖인지 가려낼 질문을 우선한다.
+
+## 출력 형식
+반드시 아래 JSON만 출력한다. 설명을 덧붙이지 않는다.
+
+{"questions": ["질문 문장", "질문 문장"]}
+"""
+
+
+REPLY_SYSTEM_PROMPT = """너는 프리랜서가 클라이언트에게 보낼 답변 초안을 쓰는 어시스턴트다.
+
+## 규칙
+- 주어진 확인 질문을 빠짐없이 담되, 번호를 붙인 목록으로 자연스럽게 엮는다.
+- **줄바꿈을 쓴다.** 인사, 질문 목록, 맺음말을 빈 줄로 나누고 질문은 한 줄에 하나씩 쓴다.
+  메일 본문이므로 한 문단에 다 밀어넣으면 읽기 어렵다.
+- **금액·일정·수락 여부를 네가 확정하지 않는다.** 확인한 뒤 회신하겠다고 쓴다.
+  그건 사람이 결정한다.
+- 대화나 계약에 없는 사실을 지어내지 않는다.
+- 확인 질문이 하나도 없으면, 요청을 확인했고 검토 후 회신하겠다는 짧은 답으로 쓴다.
+- 한국어 메일 본문만 쓴다. 제목·받는사람·서명은 붙이지 않는다.
+
+## 말투(tone)
+- friendly: 친근하고 편안하게. 존댓말은 유지한다.
+- professional: 정중하고 담백하게. 군더더기 없이.
+- concise: 짧게. 인사는 한 줄, 요점만.
+- firm: 계약 범위 밖일 수 있다는 점과 추가 작업 가능성을 분명히 짚는다. 무례하지 않게.
+
+## 출력 형식
+반드시 아래 JSON만 출력한다. 설명을 덧붙이지 않는다.
+
+{"draft": "메일 본문"}
+"""
+
+
+def build_requirement_text(
+    *,
+    project_name: str,
+    client_name: str,
+    contract: ContractState | None,
+    title: str,
+    status: str,
+    quotes: Sequence[str],
+) -> str:
+    """확인 질문·답변 초안이 함께 보는 재료.
+
+    요구사항만 주면 모델이 계약 범위 안인지 밖인지 알 수 없어, 확인할 필요가
+    없는 것까지 묻거나 범위 밖인 걸 그냥 받아들이는 답을 쓴다.
+    """
+    lines = [
+        "## 프로젝트",
+        f"- 이름: {project_name}",
+        f"- 클라이언트: {client_name}",
+    ]
+
+    if contract is not None:
+        lines.append(f"- 계약 금액: {contract.amount}원")
+        lines.append(f"- 계약 납기: {contract.dueDate}")
+        lines.append("- 계약 범위:")
+        lines.extend(f"  - {item}" for item in contract.scope)
+
+    lines.append("")
+    lines.append("## 이 요구사항")
+    lines.append(f"- 제목: {title}")
+    lines.append(f"- 현재 상태: {status}")
+    lines.append("- 클라이언트가 한 말:")
+    lines.extend(f'  - "{quote}"' for quote in quotes)
+
+    return "\n".join(lines)
+
+
 PROJECT_ANALYSIS_SYSTEM_PROMPT = """계약이 체결된 뒤 클라이언트가 보낸 원문 한 건을 분류한다.
 summaryTitle은 80자 이내로 작성하고, decision은 반드시
 IN_SCOPE_ACTION_REQUIRED, OUT_OF_SCOPE_COORDINATION_REQUIRED, EXTRA_REQUEST 중 하나다.
