@@ -5,6 +5,7 @@ BackgroundTasks로 분석한다. 프론트는 provider API를 직접 호출하�
 """
 
 import hashlib
+import logging
 import os
 from datetime import date, datetime, timezone
 from typing import Literal
@@ -50,6 +51,10 @@ from models.integration import IntegrationConnection
 from models.user import User
 
 router = APIRouter(tags=["projects"])
+
+# 사용자에게는 읽을 수 있는 한 문장만 보낸다. 원인은 서버 로그에 남겨야
+# 다음에 같은 실패가 났을 때 무엇이 터졌는지 알 수 있다.
+logger = logging.getLogger(__name__)
 
 
 def _now() -> datetime:
@@ -915,6 +920,7 @@ async def requirement_questions(
     try:
         questions = await build_questions(await _requirement_text(project, requirement, current_user.id))
     except Exception:
+        logger.exception("확인 질문 생성 실패 (requirement=%s)", requirement_id)
         return fail("확인 질문을 만들지 못했습니다. 다시 시도해 주세요.", 502)
     return ok({"questions": questions})
 
@@ -940,6 +946,7 @@ async def requirement_reply(
             decision=body.decision,
         )
     except Exception:
+        logger.exception("답변 초안 생성 실패 (requirement=%s)", requirement_id)
         return fail("답변 초안을 만들지 못했습니다. 다시 시도해 주세요.", 502)
     return ok({"draft": draft})
 
