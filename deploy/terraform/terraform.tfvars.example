@@ -5,6 +5,7 @@ github_repository     = "young-thirty/agreed_be"
 github_owner_id       = "<github-owner-id>"
 github_repository_id  = "<github-repository-id>"
 frontend_origin       = "https://<frontend-domain>"
+cors_origins          = ["http://localhost:3000", "https://<frontend-domain>"]
 api_public_url        = "https://<app-runner-service-url>"
 
 mongodb_url           = "mongodb+srv://<user>:<password>@<cluster>/<db>?retryWrites=true&w=majority"

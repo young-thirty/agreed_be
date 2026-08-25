@@ -19,9 +19,21 @@ load_dotenv()
 MONGODB_URL = os.environ.get("MONGODB_URL", "mongodb://localhost:27017")
 MONGODB_DB = os.environ.get("MONGODB_DB", "agreed")
 FRONTEND_ORIGIN = os.environ.get("FRONTEND_ORIGIN", "http://localhost:3000")
-if FRONTEND_ORIGIN.strip() == "*":
-    raise RuntimeError("쿠키 인증을 사용하므로 FRONTEND_ORIGIN에 *를 쓸 수 없습니다.")
 FRONTEND_ORIGIN = FRONTEND_ORIGIN.rstrip("/")
+CORS_ORIGINS = list(
+    dict.fromkeys(
+        [
+            FRONTEND_ORIGIN,
+            *(
+                origin.strip().rstrip("/")
+                for origin in os.environ.get("CORS_ORIGINS", "").split(",")
+                if origin.strip()
+            ),
+        ]
+    )
+)
+if "*" in CORS_ORIGINS:
+    raise RuntimeError("쿠키 인증을 사용하므로 CORS origin에 *를 쓸 수 없습니다.")
 
 
 @asynccontextmanager
@@ -75,7 +87,7 @@ app = FastAPI(
 # 프론트엔드(3000)와 API(8000)가 다른 출처라 CORS가 없으면 브라우저가 전부 막는다.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[FRONTEND_ORIGIN],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -96,7 +108,7 @@ async def reject_cross_origin_cookie_writes(request: Request, call_next):
         SESSION_COOKIE_NAME
     ):
         origin = request.headers.get("origin")
-        if origin and origin.rstrip("/") != FRONTEND_ORIGIN:
+        if origin and origin.rstrip("/") not in CORS_ORIGINS:
             return fail("허용되지 않은 출처의 요청입니다.", 403)
     return await call_next(request)
 

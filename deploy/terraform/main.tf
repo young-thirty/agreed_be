@@ -145,6 +145,7 @@ resource "aws_apprunner_service" "api" {
         port = "8000"
         runtime_environment_variables = {
           FRONTEND_ORIGIN         = var.frontend_origin
+          CORS_ORIGINS            = join(",", distinct(concat([var.frontend_origin], var.cors_origins)))
           API_PUBLIC_URL          = var.api_public_url
           MONGODB_URL             = var.mongodb_url
           MONGODB_DB              = var.mongodb_db
@@ -240,6 +241,7 @@ resource "aws_iam_role_policy" "github_actions" {
       Effect = "Allow"
       Action = [
         "apprunner:DescribeService",
+        "apprunner:ListOperations",
         "apprunner:StartDeployment",
       ]
       Resource = aws_apprunner_service.api.arn

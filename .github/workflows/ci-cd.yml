@@ -102,12 +102,42 @@ jobs:
           docker push "$REGISTRY/$ECR_REPOSITORY:latest"
 
       - name: Start App Runner deployment
-        run: aws apprunner start-deployment --service-arn "$APP_RUNNER_SERVICE_ARN"
+        id: apprunner-deploy
+        run: |
+          OPERATION_ID="$(aws apprunner start-deployment \
+            --service-arn "$APP_RUNNER_SERVICE_ARN" \
+            --query 'OperationId' \
+            --output text)"
+          echo "operation_id=$OPERATION_ID" >> "$GITHUB_OUTPUT"
 
-      - name: Wait for HTTPS health
+      - name: Wait for deployment and HTTPS health
         env:
           SERVICE_ARN: ${{ env.APP_RUNNER_SERVICE_ARN }}
+          OPERATION_ID: ${{ steps.apprunner-deploy.outputs.operation_id }}
         run: |
+          DEPLOYED=false
+          for attempt in $(seq 1 60); do
+            OPERATION_STATUS="$(aws apprunner list-operations \
+              --service-arn "$SERVICE_ARN" \
+              --query "OperationSummaryList[?Id=='$OPERATION_ID'].Status | [0]" \
+              --output text)"
+            case "$OPERATION_STATUS" in
+              SUCCEEDED)
+                DEPLOYED=true
+                break
+                ;;
+              FAILED|ROLLBACK_FAILED|ROLLBACK_SUCCEEDED)
+                echo "App Runner deployment failed: $OPERATION_STATUS"
+                exit 1
+                ;;
+            esac
+            sleep 10
+          done
+          if [[ "$DEPLOYED" != "true" ]]; then
+            echo "App Runner deployment timed out: $OPERATION_ID"
+            exit 1
+          fi
+
           SERVICE_URL="$(aws apprunner describe-service --service-arn "$SERVICE_ARN" --query 'Service.ServiceUrl' --output text)"
           for attempt in $(seq 1 36); do
             if curl --fail --silent --show-error "https://$SERVICE_URL/api/health"; then

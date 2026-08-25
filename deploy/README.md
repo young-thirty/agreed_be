@@ -92,6 +92,7 @@ App Runner에서 Atlas로 나갈 수 있도록 Atlas Network Access에 App Runne
 ```env
 MONGODB_URL=mongodb+srv://...
 FRONTEND_ORIGIN=https://<frontend>
+CORS_ORIGINS=http://localhost:3000,https://<frontend>
 GOOGLE_REDIRECT_URI=https://<app-runner-url>/api/email/callback
 SLACK_REDIRECT_URI=https://<app-runner-url>/api/slack/callback
 SESSION_COOKIE_SECURE=true
@@ -99,8 +100,10 @@ SESSION_COOKIE_SAMESITE=none
 DEMO_SESSION_ENABLED=false
 ```
 
-프론트가 `localhost:3000`이거나 Vercel 등 다른 사이트에 있으면 API와 사이트가
-다르므로 시연에서는 `none`을 사용한다. `none`은 HTTPS와 `secure=true`가 필수다.
+`FRONTEND_ORIGIN`은 OAuth 완료 후 돌아갈 기본 주소이고, `CORS_ORIGINS`에는 로컬과
+배포 프론트처럼 실제 허용할 origin을 콤마로 구분해 넣는다. 프론트가
+`localhost:3000`이거나 Vercel 등 다른 사이트에 있으면 API와 사이트가 다르므로
+시연에서는 `none`을 사용한다. `none`은 HTTPS와 `secure=true`가 필수다.
 
 `INTEGRATION_TOKEN_KEY`는 로컬에서 이미 연결된 provider token을 계속 사용하려면
 현재 `.env`의 값을 그대로 Secrets Manager에 넣어야 한다. 새 값으로 바꾸면 기존

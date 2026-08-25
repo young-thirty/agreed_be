@@ -39,7 +39,13 @@ variable "github_branch" {
 
 variable "frontend_origin" {
   type        = string
-  description = "CORS와 OAuth 완료 후 돌아갈 프론트 주소"
+  description = "OAuth 완료 후 돌아갈 기본 프론트 주소"
+}
+
+variable "cors_origins" {
+  type        = list(string)
+  description = "추가로 허용할 프론트 CORS origin 목록"
+  default     = []
 }
 
 variable "api_public_url" {
