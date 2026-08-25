@@ -29,11 +29,12 @@
 ## 2. 절대 규칙
 
 1. **이 저장소는 백엔드 전용이다.** 화면 코드를 여기에 두지 않는다.
-2. **인증·로그인이 없다.** 사용자 개념 자체가 없다. 회원가입 화면이 기획에 있더라도 서버는 사용자를 구분하지 않는다.
-3. **테스트 코드를 작성하지 않는다.** 검증은 실행으로 한다.
-4. **AI에게 금액·일정·수락 여부를 결정시키지 않는다.** LLM 출력 스키마에 확정 금액 필드를 두지 않는다.
-5. **`core/`는 외부 의존을 갖지 않는다.** 3절 참조.
-6. **비밀 키는 `.env`에만 둔다.** 응답으로 내보내지 않는다.
+2. **자체 이메일·비밀번호 로그인이 있다.** Google·Slack OAuth는 로그인이 아니라 로그인한 사용자가 외부 채널 접근을 허용하는 별도 연동이다.
+3. **모든 영속 데이터는 로그인 사용자의 소유권으로 제한한다.** 요청 body의 사용자 ID를 신뢰하지 않고 HttpOnly 세션 쿠키에서 소유자를 정한다.
+4. **위험한 경계에는 작은 자동 검증을 허용한다.** 인증, 소유권, OAuth state, 토큰 암호화, 계약 반영 멱등성은 실행 확인만으로 넘기지 않는다.
+5. **AI에게 금액·일정·수락 여부를 결정시키지 않는다.** LLM 출력 스키마에 확정 금액 필드를 두지 않는다.
+6. **`core/`는 외부 의존을 갖지 않는다.** 3절 참조.
+7. **비밀 키는 `.env` 또는 배포 환경의 Secret Manager에만 둔다.** 응답·로그·프론트엔드로 내보내지 않는다.
 
 ---
 
@@ -100,11 +101,15 @@ class Contract(ContractState, Document):
 ```
 app/
 ├─ main.py                FastAPI 앱 + lifespan(init_beanie)
+├─ auth.py                세션 쿠키 → 로그인 사용자 확인
 ├─ response.py            ok() / fail() 응답 규약
 └─ api/                   라우트
+   ├─ auth.py
    ├─ analyze.py
    ├─ contract.py
-   └─ requirements.py
+   ├─ email.py
+   ├─ requirements.py
+   └─ slack.py
 
 core/                     순수 TypeScript가 아닌 순수 Python. 외부 의존 0
 ├─ domain.py              값 객체 단일 원천
@@ -114,17 +119,22 @@ core/                     순수 TypeScript가 아닌 순수 Python. 외부 의�
 
 models/                   Beanie Document
 ├─ contract.py
-└─ requirement.py
+├─ integration.py
+├─ requirement.py
+├─ session.py
+└─ user.py
 
 infra/
+├─ integrations/          Gmail·Slack OAuth와 REST 어댑터
 ├─ ingest/                입력 어댑터 경계
 │  └─ paste.py            붙여넣기 → Utterance[]
-└─ llm/
+├─ llm/
    ├─ client.py           DeepSeek 클라이언트
    ├─ prompts.py          프롬프트 (코드와 분리)
    ├─ schemas.py          출력 스키마 (L1)
    ├─ extract.py          파이프라인 L1→L2→L3
    └─ fallback.py         시연 폴백
+└─ security/              비밀번호·세션·provider token 보안 유틸
 ```
 
 프롬프트는 코드에 문자열로 박지 않고 `infra/llm/prompts.py`에 모은다. 튜닝할 때 로직을 건드리지 않기 위해서다.
@@ -136,18 +146,35 @@ infra/
 | 항목 | 선택 |
 |---|---|
 | 웹 프레임워크 | FastAPI + uvicorn |
-| 언어 | Python 3.11+ |
+| 언어 | Python 3.12 (`.python-version`; 현재 Beanie 2.2는 Python 3.14 미지원) |
 | 검증 | Pydantic v2 |
 | DB | MongoDB |
 | ODM | Beanie 2.x |
 | AI | DeepSeek (`deepseek-chat`) |
+| HTTP 클라이언트 | httpx |
+| 비밀번호 해시 | pwdlib + Argon2 |
+| 연동 토큰 암호화 | cryptography (Fernet) |
 
 ### 알아둘 것
 
 - **Beanie 2.x는 motor를 쓰지 않는다.** `pymongo.AsyncMongoClient`를 쓴다. 인터넷의 옛 예제는 대부분 `AsyncIOMotorClient`인데 그건 Beanie 1.x다.
 - **DeepSeek은 OpenAI 호환이다.** `openai` 패키지에 `base_url="https://api.deepseek.com"`만 바꿔 쓴다.
 - **구조화 출력은 JSON mode를 쓴다.** function calling 대신이다. 어차피 받은 결과를 Pydantic으로 다시 검증하므로(L1), 실패 지점이 적은 쪽을 택했다.
-- **새 라이브러리를 추가하기 전에 팀에 묻는다.**
+- **새 라이브러리는 필요한 보안·기능 근거와 검증 방법을 남기고 추가한다.**
+
+### 로그인과 외부 채널 연동은 분리한다
+
+```
+이메일·비밀번호 로그인  →  Agreed 사용자와 HttpOnly 세션 쿠키
+Google OAuth            →  그 사용자의 Gmail 읽기 권한
+Slack OAuth             →  그 사용자의 Slack 워크스페이스 권한
+```
+
+- 브라우저에는 무작위 opaque 세션 토큰만 HttpOnly 쿠키로 둔다. MongoDB에는 그 토큰의 SHA-256 해시만 저장한다.
+- 비밀번호는 Argon2 해시만 저장한다.
+- Google access/refresh token과 Slack bot token은 서버에서 암호화해 MongoDB에 저장한다. 쿠키·localStorage·API 응답에 넣지 않는다.
+- OAuth callback은 예외적으로 GET을 사용하며, 로그인 세션에 묶인 난수 `state`를 반드시 검증하고 한 번 사용한 뒤 폐기한다.
+- 계약, 요구사항, 연동 정보의 조회·수정은 항상 세션에서 얻은 `ownerId` 조건을 포함한다.
 
 ---
 
@@ -232,7 +259,7 @@ if requirement.status != "합의":
 좋음:  "대화 내용을 분석하지 못했습니다. 다시 시도해 주세요."
 ```
 
-HTTP 상태 코드는 정상 200, 잘못된 입력 400, 없음 404, 서버 오류 500만 쓴다.
+HTTP 상태 코드는 정상 200, 잘못된 입력 400, 로그인 필요 401, 없음 404, 충돌 409, 외부 서비스 실패 502, 서버 오류 500을 쓴다.
 
 ### 필드 이름은 camelCase다
 
@@ -260,7 +287,7 @@ HTTP 상태 코드는 정상 200, 잘못된 입력 400, 없음 404, 서버 오�
 
 ### 8.3 검증 가능한 목표로 바꾼다
 
-테스트 코드는 쓰지 않으므로, 실행해서 확인할 수 있는 조건으로 정의한다.
+실행 확인과 작은 자동 검증 중 위험에 맞는 방법으로 확인할 수 있는 조건을 정의한다.
 
 ```
 1. [작업] → 확인: [확인 방법]
@@ -305,8 +332,10 @@ HTTP 상태 코드는 정상 200, 잘못된 입력 400, 없음 404, 서버 오�
 
 ## 10. 하지 않는 것
 
-- 테스트 코드
-- 로그인, 인증, 사용자 관리
+- Google·Slack OAuth를 Agreed 로그인으로 재사용
+- JWT·provider token을 localStorage에 저장
+- 사용자 ID를 요청 body에서 받아 소유권 판단
+- 비밀번호·provider token·MongoDB 전체 URI를 로그나 API 응답에 노출
 - 별도 서버 분리, 마이크로서비스
 - 국제화
 - 과도한 로딩 상태와 에러 바운더리
@@ -327,6 +356,9 @@ HTTP 상태 코드는 정상 200, 잘못된 입력 400, 없음 404, 서버 오�
 - [ ] 에러 문구가 사용자가 읽을 문장인가
 - [ ] 응답 필드가 camelCase인가
 - [ ] API 키가 응답에 섞이지 않는가
+- [ ] 모든 영속 데이터 조회·수정에 로그인 사용자의 소유권 조건이 있는가
+- [ ] 세션 원문 토큰은 DB에 없고, provider token은 암호화되어 있는가
+- [ ] OAuth `state`를 검증하고 callback 후 폐기하는가
 
 ---
 
@@ -334,7 +366,7 @@ HTTP 상태 코드는 정상 200, 잘못된 입력 400, 없음 404, 서버 오�
 
 - 주석과 커밋 메시지는 한국어로 쓴다.
 - 기존 파일을 통째로 다시 쓰지 않는다. 필요한 부분만 고친다.
-- 새 의존성을 추가하기 전에 묻는다.
+- 새 의존성은 필요한 이유와 검증 방법을 함께 남긴다.
 - `core/domain.py`를 수정하는 변경은 먼저 알린다. 프론트엔드가 함께 참조한다.
 - 에러 메시지는 사용자가 읽을 문장으로 쓴다.
 - 확신이 없으면 코드를 쓰기 전에 묻는다.

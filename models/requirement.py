@@ -1,4 +1,5 @@
-from beanie import Document
+from beanie import Document, PydanticObjectId
+from pymongo import ASCENDING, IndexModel
 
 from core.domain import RequirementState
 
@@ -10,5 +11,8 @@ class Requirement(RequirementState, Document):
     그대로 넘길 수 있다. Beanie를 아는 쪽은 이 파일뿐이다.
     """
 
+    ownerId: PydanticObjectId
+
     class Settings:
         name = "requirements"
+        indexes = [IndexModel([("ownerId", ASCENDING)])]

@@ -61,7 +61,7 @@ MongoDB를 채택한다. 근거는 두 가지다.
 
 **둘째, 자료 구조의 성격이다.** 요구사항은 `evidence` 배열과 `basis` 판별 유니온을 포함하는 중첩 구조이며, 계약은 `scope` 배열을 포함한다. 관계형 모델에서는 JSON 컬럼이나 별도 테이블로 우회해야 하고, 어느 쪽이든 조회 시 타입 검증이 유실된다. 본 시스템에는 조인이 필요한 질의가 존재하지 않으므로 관계형 모델의 이점이 발휘될 지점이 없다.
 
-**한계도 명시한다.** 요구사항을 계약에 반영할 때 `Requirement`와 `Contract` 두 문서가 함께 변경되며, 이 연산은 원자적이지 않다. 단일 사용자를 전제한 현 단계에서는 문제가 되지 않으나, 다중 사용자로 확장할 경우 재검토 대상이다.
+**한계도 명시한다.** 요구사항을 계약에 반영할 때 `Requirement`와 `Contract` 두 문서가 함께 변경되므로 멱등 키, 사용자별 버전 unique index와 충돌 처리가 필요하다. 로그인 도입 이후 모든 조회·수정은 세션 사용자의 `ownerId` 범위 안에서만 수행한다. 프로젝트별 계약 모델은 기능 확정서에서 `projectId`를 고정할 때 추가한다.
 
 ODM으로는 Beanie를 사용한다. Pydantic 모델이 곧 문서 스키마이므로 API 응답 모델과 저장 스키마를 별도로 정의하지 않는다. 정의가 한 곳에 모이면 수정해야 할 지점이 하나로 줄어든다.
 
@@ -72,7 +72,7 @@ ODM으로는 Beanie를 사용한다. Pydantic 모델이 곧 문서 스키마이�
 | 항목 | 선택 |
 |---|---|
 | 웹 프레임워크 | FastAPI |
-| 언어 | Python 3.11+ |
+| 언어 | Python 3.12 |
 | 스키마 검증 | Pydantic v2 |
 | 저장소 | MongoDB |
 | ODM | Beanie 2.x |
@@ -86,9 +86,9 @@ Beanie 2.x는 motor가 아닌 pymongo의 비동기 클라이언트(`AsyncMongoCl
 
 현재 구조는 개발 기간의 제약에 따른 임시 조치가 아니라, 이후 단계로의 이전 비용을 최소화하도록 의도된 구조이다. 전제는 2절의 계층 제약이다.
 
-**입력 경로의 확장이 가장 먼저 온다.** 슬랙, 지메일 연동은 `infra/ingest/` 하위에 어댑터를 추가하는 작업이다. 어댑터의 책임은 외부 자료를 `Utterance` 목록으로 정규화하는 것 하나이며, 도메인 계층은 입력의 출처를 알지 못한다. 현재 `paste.py`가 그 첫 어댑터이고, `slack.py`와 `gmail.py`가 같은 자리에 놓인다.
+**입력 경로의 확장이 진행 중이다.** `feat/#6`에서 확인한 슬랙·지메일 OAuth와 조회 로직을 `infra/integrations/`로 옮긴다. provider 응답은 먼저 채널 공통 DTO로 정규화하고, 이후 `infra/ingest/`가 AI 입력 발화로 바꾼다. 도메인 계층은 provider token과 REST 응답을 알지 못한다.
 
-**다음으로 사용자 개념의 도입이다.** 현 단계에는 인증이 없다. 다중 사용자를 지원하려면 문서에 소유자 식별자를 추가하고 조회에 필터를 거는 작업이 필요하며, 변경 범위는 `models/`와 라우트 계층에 한정된다.
+**사용자 개념을 도입했다.** 자체 이메일·비밀번호 로그인은 서버측 opaque session을 사용하고, Google·Slack OAuth는 로그인과 별도의 연동 권한으로 취급한다. 브라우저에는 HttpOnly 세션 쿠키만 두며 provider token은 암호화해 MongoDB에 저장한다. 소유권은 요청 body가 아니라 세션에서 정한다.
 
 **모델 교체는 `infra/llm/client.py` 한 파일에 국한된다.** 도메인 계층은 어떤 모델이 응답했는지 알지 못하며, 검증 계층은 응답의 출처와 무관하게 동일하게 동작한다.
 
@@ -176,6 +176,19 @@ Beanie 2.x는 motor가 아닌 pymongo의 비동기 클라이언트(`AsyncMongoCl
 | 메서드 | 경로 | 역할 |
 |---|---|---|
 | GET | `/api/health` | 기동 확인 |
+| POST | `/api/auth/signup` | 자체 회원가입 + 세션 시작 |
+| POST | `/api/auth/login` | 자체 로그인 + 세션 시작 |
+| POST | `/api/auth/logout` | 세션 폐기 |
+| GET | `/api/auth/me` | 로그인 사용자 조회 |
+| GET | `/api/email/connect` | Gmail OAuth 시작 |
+| GET | `/api/email/callback` | Gmail OAuth callback |
+| POST | `/api/email/messages` | Gmail 원문 조회·정규화 |
+| GET | `/api/slack/connect` | Slack OAuth 시작 |
+| GET | `/api/slack/callback` | Slack OAuth callback |
+| POST | `/api/slack/workspaces` | 연결된 워크스페이스 조회 |
+| POST | `/api/slack/channels` | 채널 목록 조회 |
+| POST | `/api/slack/messages` | 채널 메시지 조회 |
+| POST | `/api/slack/thread` | 스레드 조회 |
 | GET | `/api/contract` | 현재 계약 조회 (최신 버전) |
 | POST | `/api/contract` | 최초 계약 등록 |
 | POST | `/api/contract/apply` | L4 승인 게이트. 계약 버전 증가 |
@@ -185,5 +198,7 @@ Beanie 2.x는 motor가 아닌 pymongo의 비동기 클라이언트(`AsyncMongoCl
 | POST | `/api/requirements/{id}/transition` | 사람 조작 상태 전이 |
 
 FastAPI가 `/docs`에 OpenAPI 문서를 자동 생성한다. 별도의 API 문서를 작성하지 않는다.
+
+OAuth 시작·callback과 Slack 파일 스트림은 브라우저 redirect/파일 표시를 위한 GET 예외다. 나머지 데이터 API는 공통 `{ok, data}` / `{ok, error}` 응답을 사용한다. 상세 수집·AI 구조는 [DATA_AI_PIPELINE.md](./DATA_AI_PIPELINE.md)에 둔다.
 
 계약은 버전마다 새 문서를 생성한다. 갱신이 아니라 추가이므로 이전 버전이 보존되며, 어떤 요구사항으로 인해 계약이 어떻게 변경되었는지 추적할 수 있다.

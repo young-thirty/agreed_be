@@ -1,217 +1,98 @@
-# HANDOFF.md — 인수인계
+# Agreed 백엔드 인수인계
 
-> 이 저장소에 처음 들어온 사람이 읽는 문서다.
-> 무엇을 만들고 있고, 왜 이렇게 만들었고, 지금 어디까지 됐는지를 담는다.
+## 제품 원칙
 
----
+Agreed는 계약 체결 이후 프리랜서와 클라이언트가 Gmail·Slack에서 주고받는
+대화에서 새 요구사항을 찾고 계약 변경분을 관리합니다.
 
-## 1. 무엇을 만드는가
+> AI는 무엇이 바뀌었는지 정리하고, 사람은 받아줄지·금액·납기를 결정한다.
 
-**Agreed** — 계약 체결 이후 프리랜서와 클라이언트가 주고받는 대화에서, 새로 생긴 요구사항과 합의의 변화를 추적해 계약을 최신 상태로 유지하는 서비스다.
+AI는 `합의`, `완료`, `거절`을 제안하지 않습니다. 계약은 사람이 합의 상태를
+확정한 뒤 `POST /api/contract/apply` 한 경로로만 변경합니다.
 
-### 문제
+## 저장소 경계
 
-프리랜서와 클라이언트의 소통 채널이 분산돼 있다. 이메일, 슬랙, 메신저에 요구사항이 흩어진다. 그래서 **요구사항이 바뀌어도 계약이 최신화되지 않는다.** 이게 핵심 문제다.
-
-지금 프리랜서가 직접 하고 있는 일:
-
-- 대화를 다시 읽는다
-- 계약서와 대조한다
-- 무엇이 바뀌었는지 정리한다
-- 금액을 다시 계산한다
-
-이 네 가지는 생각이 필요 없지만 안 하면 넘어갈 수 없는 일이다. **이걸 없앤다.**
-
-남기는 것: **받아줄지, 얼마에, 언제까지.** 전부 사람의 판단이다.
-
-### 대회 맥락
-
-UNITHON 해커톤 겸 창업대회. 주제는 **UNWORK: 일을 지우고, 사람을 남기다**.
-평가 관점이 "무엇을 만들었는가"가 아니라 **"무엇을 사라지게 했는가"**다.
-
----
-
-## 2. 절대 불변 원칙
-
-> **AI는 무엇이 바뀌었는지 관리하고, 사람은 바꿔도 되는지 판단한다.**
-
-**AI가 금액·일정·수락 여부를 결정하는 코드는 어떤 이유로도 작성하지 않는다.**
-
-이건 취향이 아니라 제품의 정체성이다. 코드 곳곳에서 이 원칙이 강제된다.
-
-| 장치 | 위치 | 하는 일 |
-|---|---|---|
-| `LLM_PROPOSABLE` | `core/state_machine.py` | 모델이 '합의'·'완료'·'거절'을 제안할 수 없다 |
-| 출력 스키마에 금액 필드 없음 | `infra/llm/schemas.py` | 확정 금액은 모델이 낼 수 없다 |
-| `apply_to_contract` 승인 검사 | `core/contract_ops.py` | 합의 안 된 요구사항은 계약에 못 들어간다 |
-
-### 표현 주의
-
-**"AI가 계약서를 자동 수정한다"고 말하지 않는다.** 기획서에 그렇게 쓰여 있어도 바꾼다.
-
-정확한 표현은 **"AI가 변경분 초안을 만들고, 사람이 승인하면 반영된다"**이다. 심사에서 "그럼 AI가 계약을 바꾸는 겁니까?"라는 질문이 나오면 앞의 표현으로는 방어가 안 된다.
-
----
-
-## 3. 고정 시연 시나리오
-
-**모든 목 데이터와 예시는 이 시나리오를 따른다.**
-
-```
-최초 계약
-  홈페이지 제작 / 국문 5페이지 / 수정 2회 / 납기 2026-09-20 / 5,000,000원
-
-대화
-  고객: 영문 페이지도 가능할까요?
-  팀원: 네, 가능할 것 같습니다.
-
-기대 결과
-  요구사항 '영문 페이지 추가' / 상태 '문의' / 계약 근거 없음
-  (금액은 비어 있다 — AI가 정하지 않는다)
-
-사람의 판단
-  추가 1,000,000원, 납기 2026-09-27
-
-고객 동의 후
-  6,000,000원 / 2026-09-27 / scope에 '영문 페이지 추가'
-```
-
-**핵심 순간**: 고객 동의 시 계약에 변경분이 diff로 삽입되고 금액이 올라간다. 이 5초가 시연의 전부다.
-
-이 시나리오는 **네트워크를 타지 않는다.** `infra/llm/fallback.py`가 `"영문 페이지도 가능할까요"`를 감지하면 모델 호출 없이 즉시 결과를 돌려준다. 현장에서 회선이 끊기거나 모델 응답이 흔들려도 시연이 멈추지 않는다.
-
----
-
-## 4. 확정된 설계 결정
-
-논의를 거쳐 확정된 것들이다. **되돌리려면 먼저 팀에 알린다.**
-
-| # | 결정 | 이유 |
-|---|---|---|
-| 1 | `can_transition`은 정상 전이표(전진만). 강등은 전이표 바깥의 비상구 | 정상 흐름과 예외 처리를 섞지 않는다 |
-| 2 | 강등(`demote`)은 LLM 출력에만 적용. 사람 조작(`transition`)은 불가능한 전이 시 예외를 던진다 | 사람은 화면에서 고를 수 있는 것만 고른다. 불가능한 값이 왔다면 호출부가 잘못된 것이라 드러내야 한다 |
-| 3 | LLM은 '합의'·'완료'·**'거절'**을 제안할 수 없다 | 셋 다 사람이 결정하는 사실 확인이다. 특히 '거절'을 모델이 먼저 정하면 그 카드가 화면에서 사라져 사람이 판단할 기회 자체가 없어진다 |
-| 4 | `문의 → 제안` 직행 허용 | 사람이 문의를 보자마자 금액·납기를 붙여 제안하는 경우가 있다. '요청'을 억지로 거치게 하면 사용자가 하지 않은 단계를 시스템이 만들어낸다 |
-| 5 | `demote`는 같은 상태 재제안을 먼저 통과시킨다 | 대화가 추가로 들어와 재분석할 때, 전이표에 자기 자신으로 가는 길이 없다는 이유로 멀쩡한 카드가 '미확정'으로 떨어지면 안 된다. 사용자 눈엔 버그다 |
-| 6 | 예선 입력은 텍스트 붙여넣기 + 파일 업로드. OAuth 연동은 로드맵 | 시연장 와이파이·리디렉트 URI·토큰 만료가 현장 사고의 3대 원인이다 |
-| 7 | 카카오톡은 채널에서 제외 | 공개 API가 없어 자동 수집이 불가능하다. 채널은 이메일·슬랙 둘뿐 |
-| 8 | RAG·파인튜닝 안 씀 | 계약서가 짧아 전체를 문맥에 넣을 수 있다. 쪼개면 대조에 필요한 조항이 누락돼 정확도가 오히려 떨어진다 |
-| 9 | 응답 필드는 camelCase | 프론트엔드가 이미 그 이름을 기대한다. 별칭 설정을 한 겹 두면 어긋날 때 조용히 필드가 사라진다 |
-
----
-
-## 5. 저장소 구성
-
-| 저장소 | 담당 | 스택 |
-|---|---|---|
-| `young-thirty/agreed_dev` | 프론트엔드 | Next.js, TypeScript, Tailwind |
-| `young-thirty/agreed_be` (여기) | 백엔드 API | FastAPI, MongoDB, Beanie, DeepSeek |
-
-두 저장소는 **응답 규약(`{ok, data}` / `{ok, error}`)과 필드 이름**으로 이어진다. 프론트는 `lib/api-client.ts`의 `post()`로 이 API를 부른다.
-
-### 이관 내역
-
-`agreed_dev`에서 검증을 마치고 옮겨온 로직이다. 이미 시연 시나리오로 end-to-end 확인한 코드다.
-
-| 원본 (agreed_dev) | 현재 위치 |
+| 저장소 | 담당 |
 |---|---|
-| `core/requirement/state-machine.ts` | `core/state_machine.py` |
-| `core/requirement/grounding.ts` | `core/grounding.py` |
-| `core/contract/apply.ts` + `diff.ts` | `core/contract_ops.py` |
-| `infra/ingest/paste.ts` | `infra/ingest/paste.py` |
-| `infra/llm/prompts/extract.ts` | `infra/llm/prompts.py` |
-| `infra/llm/fallback.ts` | `infra/llm/fallback.py` |
-| `infra/llm/schema.ts` (Zod) | `infra/llm/schemas.py` (Pydantic) |
-| `types/index.ts` | `core/domain.py` + `models/` |
-| `lib/api-response.ts` | `app/response.py` |
+| `young-thirty/agreed_dev` | Next.js 화면과 FastAPI 호출 |
+| `young-thirty/agreed_be` | 로그인, MongoDB, AI, Gmail·Slack OAuth/API |
 
-**새로 쓴 것**: `infra/llm/client.py`(Anthropic → DeepSeek), 라우트 전체(Next → FastAPI), `models/`(DB가 새로 생김).
+프론트에는 공개 가능한 API 주소만 둡니다. DeepSeek·Google·Slack secret과
+provider token은 백엔드에서만 다룹니다.
 
-**프론트에 남은 것**: `app/page.tsx`, `components/`, `lib/api-client.ts`, `hooks/usePersistedState.ts`.
+## 현재 구현
 
----
+- 자체 회원가입·로그인·로그아웃·현재 사용자 조회
+- opaque session을 HttpOnly cookie로 발급하고 DB에는 hash만 저장
+- Contract·Requirement·IntegrationConnection을 로그인 사용자에게 귀속
+- Google authorization-code OAuth, refresh token 보관, Gmail 읽기
+- Slack OAuth, 워크스페이스·채널·메시지·스레드·파일 읽기
+- provider token을 Fernet으로 암호화해 MongoDB 저장
+- OAuth callback을 시작 로그인 세션과 연결
+- 계약 diff와 합의 후 멱등 반영
+- DeepSeek 실패 시 고정 시연 폴백
 
-## 6. 지금 상태
+Gmail 권한은 현재 `gmail.readonly`뿐입니다. 화면의 답장은 “초안 생성”까지이며
+실제 메일 전송 API는 아직 만들지 않았습니다.
 
-### 되어 있는 것
+## OAuth callback
 
-- 5계층 검증 파이프라인 전체 (L0~L4)
-- 엔드포인트 8개, `/docs`에 Swagger UI 자동 생성
-- 시연 폴백 (네트워크 없이 고정 시나리오 동작)
-- 고정 시연 시나리오 end-to-end 검증 완료 — 600만원 / 2026-09-27 / scope 추가까지 일치
+Google Cloud Console과 Slack 앱 설정에서 아래 값을 정확히 등록합니다.
 
-### 검증한 것
-
-```
-L0  발화 분할          "고객: ..." → index/channel/speaker/text
-L1  스키마 강제        '합의'·'완료'·'거절' 차단 확인, 근거 0개 차단 확인
-L2  근거 검증          공백 다른 인용 통과, 원문에 없는 인용 탈락
-L3  상태 전이          거절 제안 → 미확정 강등, 자기전이 통과, 문의→제안 직행
-L4  승인 게이트        합의 전 차단 → 합의 후 반영
+```text
+Google: http://localhost:8000/api/email/callback
+Slack:  http://localhost:8000/api/slack/callback
 ```
 
-### 기획에는 있으나 아직 구현 안 된 것
+예전 `localhost:3000/api/.../callback`은 Next.js 서버 구현의 주소이므로 더 이상
+사용하지 않습니다. 운영 배포 후에는 같은 path의 HTTPS 백엔드 주소를 추가합니다.
 
-**시연 시나리오를 돌리는 데는 지장이 없다.** 다만 기획서에 있는 내용이므로 없다는 것을 알고 있어야 한다.
+환경설정은 `bash scripts/configure_local_env.sh`로 입력합니다. `.env`는
+gitignore 대상이며 파일 권한은 600으로 맞춥니다.
 
-| # | 항목 | 현재 상태 |
+## 주요 API
+
+| 메서드 | 경로 | 역할 |
 |---|---|---|
-| 1 | **DeepSeek 실호출** | `infra/llm/client.py`는 완성. 키만 넣으면 된다. **유일하게 실호출로 검증 안 된 부분이다.** 고정 시나리오가 아닌 대화로 JSON이 나오는지 먼저 확인할 것 |
-| 2 | **제안서 입력 경로** | `Basis`에 `'제안서'` 케이스는 정의돼 있으나 **제안서를 받는 경로도, 대조하는 LLM 호출도 없다.** `basis`는 항상 `{"kind": "없음"}`이다. 기획 3번(제안서 혼동 줄이기)의 핵심이라 결국 필요하다. 시연 시나리오에서는 '근거 없음'이 정답이라 당장은 무해하다 |
-| 3 | **파일 업로드** | 결정 6번에 "붙여넣기 + 파일 업로드"라고 되어 있으나 업로드 라우트가 없다. 지금은 붙여넣기(`rawText`)만 된다 |
-| 4 | **계약 activate 개념** | "계약 체결 시점부터 수집 시작"이라는 상태가 없다. 지금은 계약 문서를 하나 만드는 것이 전부다 |
-| 5 | **슬랙 연동** | 담당자 있음. `infra/ingest/slack.py`를 만들어 `Utterance` 목록을 뱉으면 나머지 파이프라인은 그대로 탄다 |
-| 6 | **지메일 연동** | 같은 방식 |
-| 7 | **회원가입 화면** | 기획에는 있으나 **서버는 사용자를 구분하지 않는다.** 의도된 것이다(CLAUDE.md 2절 규칙 2번). 화면상의 개념일 뿐 서버에 사용자 데이터가 없다 |
+| POST | `/api/auth/signup` | 자체 회원가입 + 로그인 |
+| POST | `/api/auth/login` | 자체 로그인 |
+| POST | `/api/auth/logout` | 로그아웃 |
+| GET | `/api/auth/me` | 현재 사용자 |
+| GET | `/api/email/status` | Gmail 연결 상태 |
+| GET | `/api/email/connect` | Gmail OAuth 시작 |
+| GET | `/api/email/callback` | Google callback |
+| POST | `/api/email/messages` | 최근 Gmail 조회·그룹화 |
+| GET | `/api/slack/connect` | Slack OAuth 시작 |
+| GET | `/api/slack/callback` | Slack callback |
+| POST | `/api/slack/workspaces` | 연결 워크스페이스 |
+| POST | `/api/slack/channels` | 채널 목록 |
+| POST | `/api/slack/join` | 공개 채널 참여 |
+| POST | `/api/slack/messages` | 채널 메시지 |
+| POST | `/api/slack/thread` | 스레드 답글 |
+| GET | `/api/slack/file` | 인증된 파일 프록시 |
 
-`Utterance` 목록만 만들어주면 5·6번은 파이프라인을 건드리지 않는다. 그게 `infra/ingest/`를 어댑터 경계로 둔 이유다.
+모든 브라우저 API 호출은 `credentials: include`를 사용합니다.
 
----
+## 아직 구현하지 않은 다음 단계
 
-## 7. 실행 방법
+기능 확정서를 받은 뒤 아래를 순서대로 추가합니다.
 
-```bash
-# 1. 의존성
-pip install -r requirements.txt
+1. 여러 프로젝트를 위한 `Project`와 프로젝트별 계약
+2. 계약서·제안서 파일과 추출 텍스트
+3. Gmail·Slack 원문을 보존하는 `SourceMessage`와 증분 동기화
+4. 3색 판정·검증 근거를 버전별로 남기는 `AnalysisRun`
+5. 체크리스트와 답변 초안
+6. Slack Events / Gmail push 또는 worker
+7. 연동 해제·provider revoke, 운영 rate limit과 보관 정책
 
-# 2. MongoDB (로컬)
-docker run -d -p 27017:27017 --name agreed-mongo mongo
+상세 흐름은 [DATA_AI_PIPELINE.md](./DATA_AI_PIPELINE.md)에 있습니다. 필드와 API는
+기능 확정서 전에는 임의로 고정하지 않습니다.
 
-# 3. 환경변수
-cp .env.example .env      # DEEPSEEK_API_KEY 채우기
+## 검증과 배포
 
-# 4. 실행
-uvicorn app.main:app --reload --port 8000
-```
+로컬 임시 MongoDB E2E에서 회원가입, 사용자 분리, 계약 반영 멱등성,
+Gmail·Slack OAuth 시작 URL과 8000 callback 생성을 검증했습니다. 실제 provider
+callback은 client secret과 콘솔 등록 후 확인합니다.
 
-- API 문서: http://localhost:8000/docs
-- 헬스체크: http://localhost:8000/api/health
-
-**키가 없어도 서버는 뜨고 고정 시연 시나리오는 동작한다.** 폴백이 먼저 걸리기 때문이다. 다른 대화를 넣으면 빈 결과가 나온다.
-
-### 시연 세팅 순서
-
-```
-1. POST /api/contract        최초 계약 등록 (5,000,000원 / 2026-09-20)
-2. POST /api/analyze         대화 붙여넣기 → '영문 페이지 추가 / 문의' 카드
-3. POST /api/requirements/{id}/transition
-                             to='제안', decision={amountDelta: 1000000, dueDate: '2026-09-27'}
-4. POST /api/requirements/{id}/transition   to='합의'
-5. POST /api/contract/apply  → 6,000,000원 / 2026-09-27 + diff
-```
-
----
-
-## 8. 배포
-
-시연이 **노트북으로 직접 보여주는 형태면 배포하지 않는다.** 로컬 3개 프로세스(Next, FastAPI, Mongo 컨테이너)가 가장 안전하다.
-
-URL이 필요해지면:
-
-- 프론트 → Vercel
-- 백엔드 → Render 또는 Railway
-- DB → MongoDB Atlas 무료 티어(M0)
-
-**코드는 바뀌지 않는다.** `.env`의 `MONGODB_URL`만 `mongodb://localhost:27017`에서 Atlas 주소로 바꾸면 된다. 그래서 지금 Atlas를 세팅할 이유가 없다.
-
-주의: 프론트만 배포하고 백엔드를 로컬에 두면 https → http라 브라우저가 차단한다. **둘 다 로컬이거나 둘 다 배포다.**
+배포는 AWS로 진행하며 CI/CD 안이 오면 서비스 구성을 고정합니다. 프론트와 API가
+서로 다른 사이트라면 HTTPS와 cookie 설정을 함께 맞춰야 합니다.

@@ -16,8 +16,15 @@ from fastapi.responses import JSONResponse
 
 
 def ok(data: Any) -> JSONResponse:
-    return JSONResponse({"ok": True, "data": jsonable_encoder(data)})
+    return JSONResponse(
+        {"ok": True, "data": jsonable_encoder(data)},
+        headers={"Cache-Control": "private, no-store", "Vary": "Origin, Cookie"},
+    )
 
 
 def fail(error: str, status: int = 400) -> JSONResponse:
-    return JSONResponse({"ok": False, "error": error}, status_code=status)
+    return JSONResponse(
+        {"ok": False, "error": error},
+        status_code=status,
+        headers={"Cache-Control": "private, no-store", "Vary": "Origin, Cookie"},
+    )
