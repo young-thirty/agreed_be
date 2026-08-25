@@ -26,7 +26,7 @@ async def list_requirements(current_user: User | None = Depends(get_current_user
     if current_user is None:
         return fail("로그인이 필요합니다.", 401)
     requirements = await Requirement.find(
-        Requirement.ownerId == current_user.id
+        Requirement.ownerId == current_user.id, Requirement.projectId == None
     ).to_list()
     return ok([public_requirement(item) for item in requirements])
 
@@ -43,6 +43,7 @@ async def allowed_transitions(
     requirement = await Requirement.find_one(
         Requirement.id == requirement_id,
         Requirement.ownerId == current_user.id,
+        Requirement.projectId == None,
     )
     if requirement is None:
         return fail("해당 요구사항을 찾을 수 없습니다.", 404)
@@ -61,6 +62,7 @@ async def change_status(
     requirement = await Requirement.find_one(
         Requirement.id == requirement_id,
         Requirement.ownerId == current_user.id,
+        Requirement.projectId == None,
     )
     if requirement is None:
         return fail("해당 요구사항을 찾을 수 없습니다.", 404)

@@ -108,6 +108,7 @@ app/
    ├─ analyze.py
    ├─ contract.py
    ├─ email.py
+   ├─ projects.py
    ├─ requirements.py
    └─ slack.py
 
@@ -121,6 +122,10 @@ models/                   Beanie Document
 ├─ contract.py
 ├─ integration.py
 ├─ requirement.py
+├─ project.py
+├─ source_link.py / source_message.py
+├─ client_request.py / project_material.py
+├─ analysis_run.py
 ├─ session.py
 └─ user.py
 

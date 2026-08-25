@@ -11,6 +11,8 @@
 - Gmail OAuth와 읽기 전용 메일 조회
 - Slack OAuth와 워크스페이스·채널·스레드·파일 조회
 - DeepSeek 요구사항 추출과 계약 변경 승인 흐름
+- 프로젝트·요청·자료·원문 저장 및 프로젝트별 계약/요구사항 API
+- Gmail 상대·Slack 채널 sync와 BackgroundTasks 기반 3색 요청 판정·자료 분류
 
 ## 로컬 실행
 
@@ -23,6 +25,9 @@ bash scripts/configure_local_env.sh
 docker run -d -p 27017:27017 --name agreed-mongo mongo
 .venv/bin/uvicorn app.main:app --reload --port 8000
 ```
+
+로그인한 사용자에게 시연용 빈 프로젝트를 만들려면 Swagger의 `POST /api/projects`를
+사용하거나 `python scripts/seed_demo.py --email 가입이메일`을 실행합니다.
 
 설정 스크립트는 Google·Slack secret과 선택적인 DeepSeek 키를 화면에 표시하지
 않고 입력받아 `.env`에 저장하며, provider token 암호화 키를 자동 생성합니다.

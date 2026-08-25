@@ -84,7 +84,7 @@ Slack 메시지 파일에는 provider의 `url_private` 대신 `fileId`만 내려
 - 5초·20초마다 provider를 직접 polling하던 코드
 
 현재 조회 API는 수동 새로고침/화면 진입 시 호출하면 됩니다. 프로젝트별 원문 저장과
-자동 수집은 `PRODUCT_API_DESIGN.md`의 P1 순서로 추가합니다.
+자동 수집은 프로젝트의 source-link를 등록한 뒤 sync API를 호출합니다. sync 이후에는 서버가 원문 저장과 AI 분석을 수행하므로 프론트는 결과 API만 다시 조회합니다.
 
 Swagger는 백엔드를 띄운 뒤 `http://localhost:8000/docs`에서 확인합니다. 회원가입 또는
 로그인을 먼저 실행하면 같은 브라우저의 HttpOnly 세션으로 보호 API도 시험할 수 있습니다.

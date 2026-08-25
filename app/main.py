@@ -8,11 +8,11 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from pymongo import AsyncMongoClient
 
-from app.api import analyze, auth, contract, email, requirements, slack
+from app.api import analyze, auth, contract, email, projects, requirements, slack
 from app.auth import SESSION_COOKIE_NAME
 from app.openapi import API_DESCRIPTION, OPENAPI_TAGS, configure_openapi
 from app.response import fail, ok
-from models import DOCUMENT_MODELS
+from models import Contract, DOCUMENT_MODELS
 
 load_dotenv()
 
@@ -36,7 +36,21 @@ async def lifespan(_: FastAPI):
     # 기동 중에 아무 메시지 없이 멈춰 있는 것처럼 보인다.
     client = AsyncMongoClient(MONGODB_URL, serverSelectionTimeoutMS=3000)
     try:
-        await init_beanie(database=client[MONGODB_DB], document_models=DOCUMENT_MODELS)
+        database = client[MONGODB_DB]
+        # projectId 도입으로 계약 unique key가 owner 전역에서 project 범위로 바뀌었다.
+        # 기존 인덱스만 제거하고 데이터는 건드리지 않는다. 새 인덱스는 init_beanie가 만든다.
+        contracts = database[Contract.Settings.name]
+        existing_indexes = await (await contracts.list_indexes()).to_list()
+        legacy_keys = {
+            ("ownerId", "version"),
+            ("ownerId", "appliedRequirementId"),
+        }
+        for index in existing_indexes:
+            key = tuple(index.get("key", {}).keys())
+            partial = index.get("partialFilterExpression", {})
+            if key in legacy_keys and "projectId" not in partial and index.get("name"):
+                await contracts.drop_index(index["name"])
+        await init_beanie(database=database, document_models=DOCUMENT_MODELS)
     except Exception as error:
         # Atlas URI에는 비밀번호가 포함될 수 있으므로 연결 문자열을 로그에 쓰지 않는다.
         raise RuntimeError(
@@ -89,6 +103,7 @@ async def reject_cross_origin_cookie_writes(request: Request, call_next):
 app.include_router(auth.router, prefix="/api")
 app.include_router(analyze.router, prefix="/api")
 app.include_router(contract.router, prefix="/api")
+app.include_router(projects.router, prefix="/api")
 app.include_router(email.router, prefix="/api")
 app.include_router(requirements.router, prefix="/api")
 app.include_router(slack.router, prefix="/api")

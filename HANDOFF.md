@@ -31,6 +31,11 @@ provider token은 백엔드에서만 다룹니다.
 - OAuth callback을 시작 로그인 세션과 연결
 - 계약 diff와 합의 후 멱등 반영
 - DeepSeek 실패 시 고정 시연 폴백
+- Project/SourceMessage/ClientRequest/ProjectMaterial/AnalysisRun 저장
+- 프로젝트 목록·상세·요청·자료·소유권 API
+- 프로젝트별 계약·요구사항 조회/전이/apply
+- 프로젝트 Gmail 상대·Slack 채널 source-link 등록과 sync
+- 원문 저장 후 BackgroundTasks 요청 3색 판정·근거·자료 종류 분류
 
 Gmail 권한은 현재 `gmail.readonly`뿐입니다. 화면의 답장은 “초안 생성”까지이며
 실제 메일 전송 API는 아직 만들지 않았습니다.
@@ -73,17 +78,13 @@ gitignore 대상이며 파일 권한은 600으로 맞춥니다.
 
 모든 브라우저 API 호출은 `credentials: include`를 사용합니다.
 
-## 아직 구현하지 않은 다음 단계
+## 시연 이후 보류한 다음 단계
 
-최종 기획 명세를 기준으로 아래를 순서대로 추가합니다.
-
-1. 여러 프로젝트를 위한 `Project`와 프로젝트별 계약
-2. 계약서·제안서 파일과 추출 텍스트
-3. Gmail·Slack 원문을 보존하는 `SourceMessage`와 증분 동기화
-4. 3색 판정·검증 근거를 버전별로 남기는 `AnalysisRun`
-5. 체크리스트와 답변 초안
-6. Slack Events / Gmail push 또는 worker
-7. 연동 해제·provider revoke, 운영 rate limit과 보관 정책
+1. 체크리스트·답변 초안 생성/발송
+2. 범용 파일 업로드·S3·OCR과 Gmail 첨부 추출
+3. Slack Events/Gmail push, 증분 historyId, 큐/워커
+4. 페이지네이션·검색·실시간 갱신
+5. 연동 해제·provider revoke, 운영 rate limit과 보관 정책
 
 상세 흐름은 [DATA_AI_PIPELINE.md](./DATA_AI_PIPELINE.md), 확정 DTO와 API는
 [PRODUCT_API_DESIGN.md](./PRODUCT_API_DESIGN.md)에 있습니다.

@@ -10,8 +10,8 @@
 - 현재 세션 로그인, OAuth, Gmail/Slack 조회는 구현되어 있다.
 - `phoneNumber`와 공개 사용자 DTO의 기존 차이는 이번 명세 반영에서 수정했다.
 - `Project`, `ProjectSourceLink`, `SourceMessage`, `ClientRequest`, `ProjectMaterial`,
-  `AnalysisRun`은 미구현이다.
-- 현재 `Contract`/`Requirement`는 사용자당 계약 하나를 가정해 `projectId` 전환이 필요하다.
+  `AnalysisRun`과 프로젝트 화면 API를 구현했다.
+- `Contract`/`Requirement`에 optional `projectId`와 프로젝트 전용 경로를 추가했다.
 - 기존 `/api/analyze`의 요구사항 상태 추출과 새 요청 요약·3색 판정은 별도 파이프라인이다.
 
 ## 2. 화면 ↔ API
@@ -198,12 +198,12 @@ integrations/analysis/contracts로 나눈다. 세션 dependency는
 `APIKeyCookie(name="agreed_session", auto_error=False)`로 표시한다.
 
 완료: phoneNumber+정확한 사용자 DTO, Swagger 전역 응답·인증·OAuth 문서화.
+완료: 프로젝트·요청·자료 모델/조회 API, source-link 등록·sync, 분석 실행 조회,
+프로젝트별 계약·요구사항 경로, 시연 seed 스크립트.
 
-P0: Project/Request/Material 모델 → 목록·상세 API → unanswered/소유권 →
-Contract/Requirement projectId → 시연 seed.
-
-P1: ProjectSourceLink/SourceMessage/AnalysisRun → Gmail 상대 1개·Slack channel 1개 sync
-→ DeepSeek 요청 분석·자료 분류 → 고정 시연 cache.
+P0/P1 구현: Project/Request/Material 모델 → 목록·상세 API → unanswered/소유권 →
+Contract/Requirement projectId → 시연 seed → Gmail 상대 1개·Slack channel 1개 sync
+→ DeepSeek 요청 분석·자료 분류.
 
 보류: Slack Events/Gmail history/watch, worker queue, pagination/검색/실시간 전송, 범용
 첨부·S3/OCR, 수동 업로드 처리, 요청 근거 상세 DTO, 체크리스트·답장 생성/발송,

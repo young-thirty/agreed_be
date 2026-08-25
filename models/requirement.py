@@ -12,7 +12,12 @@ class Requirement(RequirementState, Document):
     """
 
     ownerId: PydanticObjectId
+    projectId: PydanticObjectId | None = None
 
     class Settings:
         name = "requirements"
-        indexes = [IndexModel([("ownerId", ASCENDING)])]
+        indexes = [
+            IndexModel([("ownerId", ASCENDING)]),
+            IndexModel([("ownerId", ASCENDING), ("projectId", ASCENDING)]),
+            IndexModel([("ownerId", ASCENDING), ("projectId", ASCENDING), ("status", ASCENDING)]),
+        ]

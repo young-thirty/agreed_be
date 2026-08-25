@@ -27,7 +27,7 @@ class ApplyRequest(BaseModel):
 async def _current_contract(owner_id: PydanticObjectId) -> Contract | None:
     """계약은 버전이 올라갈 때마다 새 문서가 쌓인다. 최신 버전이 현재 계약이다."""
     return (
-        await Contract.find(Contract.ownerId == owner_id)
+        await Contract.find(Contract.ownerId == owner_id, Contract.projectId == None)
         .sort(-Contract.version)
         .first_or_none()
     )
@@ -39,6 +39,7 @@ async def _applied_contract(
 ) -> Contract | None:
     return await Contract.find_one(
         Contract.ownerId == owner_id,
+        Contract.projectId == None,
         Contract.appliedRequirementId == str(requirement_id),
     )
 
@@ -46,6 +47,7 @@ async def _applied_contract(
 async def _applied_result(owner_id: PydanticObjectId, contract: Contract):
     previous = await Contract.find_one(
         Contract.ownerId == owner_id,
+        Contract.projectId == None,
         Contract.version == contract.version - 1,
     )
     if previous is None:

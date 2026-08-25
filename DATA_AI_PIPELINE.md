@@ -45,6 +45,9 @@ token은 localStorage, JavaScript가 읽을 수 있는 쿠키, API 응답에 등
 | `ContractVersion` | 승인 후 쌓이는 계약 버전 | 프로젝트 + version |
 | `AuditEvent` | 누가 무엇을 승인·반영했는지 | append-only event ID |
 
+`ReplyDraft`와 `AuditEvent`는 제품 확정 후 추가할 보류 모델이다. 현재 시연 구현은
+Project부터 AnalysisRun까지의 채널 수집·요청 판정·자료 분류와 기존 Contract apply에 집중한다.
+
 `SourceMessage`와 `ProjectMaterial` 원문은 AI 결과로 덮어쓰지 않는다. 재분석은 기존
 결과를 수정하지 않고 새 `AnalysisRun`을 만든다. 그래야 모델이나 프롬프트를 바꾼 뒤
 왜 결과가 달라졌는지 추적할 수 있다.
@@ -150,12 +153,10 @@ AnalysisRun
 
 ## 9. 구현 순서
 
-1. 앱 로그인·사용자별 소유권과 provider token 암호화
-2. `feat/#6` Gmail/Slack OAuth·조회 어댑터의 FastAPI 이관
-3. `Project`, `ProjectMaterial`, `SourceMessage`와 증분 수집
-4. 단계별 `AnalysisRun`과 근거 검증
-5. 체크리스트·답변 초안
-6. 멱등 계약 반영·감사 로그
-7. 배포 후 Slack Events / Gmail 증분 수집 worker와 평가 데이터셋
+1. 앱 로그인·사용자별 소유권과 provider token 암호화 (완료)
+2. `feat/#6` Gmail/Slack OAuth·조회 어댑터의 FastAPI 이관 (완료)
+3. `Project`, `ProjectMaterial`, `SourceMessage`와 sync (완료)
+4. `AnalysisRun`·요청 판정·자료 분류와 근거 검증 (완료)
+5. 체크리스트·답변 초안, 증분 worker·감사 로그 (보류)
 
 공개 필드·API는 `PRODUCT_API_DESIGN.md`와 Swagger를 함께 갱신한다.

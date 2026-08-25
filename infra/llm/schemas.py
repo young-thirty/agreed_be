@@ -12,6 +12,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from core.state_machine import LLM_PROPOSABLE
+from core.project_data import AiDecisionStatus, DocumentType
 
 # LLM_PROPOSABLE를 Literal로 바꿔 스키마에 박는다. 상태 목록을 두 곳에
 # 따로 적지 않기 위해서다.
@@ -39,3 +40,13 @@ class ExtractedItem(BaseModel):
 
 class ExtractResult(BaseModel):
     items: list[ExtractedItem]
+
+
+class RequestAnalysisResult(BaseModel):
+    summaryTitle: str = Field(max_length=80)
+    decision: AiDecisionStatus
+    quote: str = Field(default="", max_length=500)
+
+
+class MaterialClassificationResult(BaseModel):
+    documentType: DocumentType

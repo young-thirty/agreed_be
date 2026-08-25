@@ -30,17 +30,12 @@ Agreed 프론트엔드가 호출하는 FastAPI입니다.
 - 이메일·비밀번호 인증과 HttpOnly 세션
 - Gmail·Slack OAuth 연동과 메시지 조회
 - 대화 붙여넣기 분석, 요구사항 전이, 계약 반영
+- 프로젝트·원문·요청·자료 저장과 프로젝트별 계약/요구사항 API
+- Gmail 상대·Slack 채널 sync 및 BackgroundTasks 기반 요청 분석·자료 분류
 
-### 기획 확정·구현 예정
+### 아직 보류한 범위
 
-아래 API는 기획은 확정됐지만 아직 OpenAPI path로 공개하지 않습니다.
-프론트엔드에서 아직 호출하지 마세요.
-
-- `GET /api/projects` — 프로젝트 목록·상태 필터·정렬
-- `GET /api/projects/{projectId}` — 프로젝트 상세 기본 정보
-- `GET /api/projects/{projectId}/requests` — 클라이언트 요청 목록
-- `GET /api/requests/{requestId}` — 클라이언트 요청 단건
-- `GET /api/projects/{projectId}/materials` — 프로젝트 자료 목록
+실시간 provider 이벤트, 큐/워커, S3/OCR, 페이지네이션, 답장 발송은 시연 이후 단계다.
 """.strip()
 
 
@@ -73,6 +68,14 @@ OPENAPI_TAGS = [
         "name": "현재 · 계약",
         "description": "현재 계약 조회·최초 등록·합의된 변경분 반영.",
     },
+    {
+        "name": "현재 · 프로젝트",
+        "description": "프로젝트 목록·상세·소유권 필터와 프로젝트별 계약/요구사항.",
+    },
+    {
+        "name": "현재 · 요청·자료",
+        "description": "채널 원문 sync, AI 요청 판정, 자료 분류 결과.",
+    },
 ]
 
 
@@ -83,6 +86,7 @@ _TAG_NAMES = {
     "analyze": "현재 · AI 분석",
     "requirements": "현재 · 요구사항",
     "contract": "현재 · 계약",
+    "projects": "현재 · 프로젝트",
 }
 
 _PUBLIC_OPERATIONS = {
@@ -124,6 +128,22 @@ _ERROR_STATUS_BY_OPERATION: dict[tuple[str, str], tuple[int, ...]] = {
     ("/api/slack/join", "post"): (401, 404, 422, 502),
     ("/api/slack/messages", "post"): (401, 404, 422, 502),
     ("/api/slack/thread", "post"): (401, 404, 422, 502),
+    ("/api/projects", "get"): (401, 422),
+    ("/api/projects", "post"): (401, 422),
+    ("/api/projects/{project_id}", "get"): (401, 404, 422),
+    ("/api/projects/{project_id}/status", "patch"): (401, 404, 422),
+    ("/api/projects/{project_id}/requests", "get"): (401, 404, 422),
+    ("/api/requests/{request_id}", "get"): (401, 404, 422),
+    ("/api/projects/{project_id}/materials", "get"): (401, 404, 422),
+    ("/api/projects/{project_id}/source-links", "get"): (401, 404, 422),
+    ("/api/projects/{project_id}/source-links", "post"): (400, 401, 404, 409, 422),
+    ("/api/projects/{project_id}/source-links/{source_link_id}/sync", "post"): (400, 401, 404, 422, 502),
+    ("/api/analysis-runs/{analysis_run_id}", "get"): (401, 404, 422),
+    ("/api/projects/{project_id}/requirements", "get"): (401, 404, 422),
+    ("/api/projects/{project_id}/contract", "get"): (401, 404, 422),
+    ("/api/projects/{project_id}/contract", "post"): (400, 401, 404, 409, 422),
+    ("/api/projects/{project_id}/contract/apply", "post"): (400, 401, 404, 409, 422),
+    ("/api/projects/{project_id}/requirements/{requirement_id}/transition", "post"): (400, 401, 404, 422),
 }
 
 _ERROR_DESCRIPTIONS = {
@@ -161,6 +181,22 @@ _SUMMARY_BY_OPERATION = {
     ("/api/slack/messages", "post"): "Slack 채널 메시지 조회",
     ("/api/slack/thread", "post"): "Slack 스레드 답글 조회",
     ("/api/slack/file", "get"): "Slack 파일 조회",
+    ("/api/projects", "get"): "프로젝트 목록 조회",
+    ("/api/projects", "post"): "프로젝트 생성",
+    ("/api/projects/{project_id}", "get"): "프로젝트 상세 조회",
+    ("/api/projects/{project_id}/status", "patch"): "프로젝트 상태 변경",
+    ("/api/projects/{project_id}/requests", "get"): "프로젝트 요청 목록 조회",
+    ("/api/requests/{request_id}", "get"): "요청 상세 및 근거 조회",
+    ("/api/projects/{project_id}/materials", "get"): "프로젝트 자료 목록 조회",
+    ("/api/projects/{project_id}/source-links", "get"): "프로젝트 채널 연결 조회",
+    ("/api/projects/{project_id}/source-links", "post"): "프로젝트 채널 연결 등록",
+    ("/api/projects/{project_id}/source-links/{source_link_id}/sync", "post"): "채널 원문 수집·AI 분석 시작",
+    ("/api/analysis-runs/{analysis_run_id}", "get"): "AI 분석 상태 조회",
+    ("/api/projects/{project_id}/requirements", "get"): "프로젝트 요구사항 조회",
+    ("/api/projects/{project_id}/contract", "get"): "프로젝트 계약 조회",
+    ("/api/projects/{project_id}/contract", "post"): "프로젝트 최초 계약 등록",
+    ("/api/projects/{project_id}/contract/apply", "post"): "프로젝트 계약 반영",
+    ("/api/projects/{project_id}/requirements/{requirement_id}/transition", "post"): "프로젝트 요구사항 전이",
 }
 
 

@@ -12,6 +12,7 @@ class Contract(ContractState, Document):
     """
 
     ownerId: PydanticObjectId
+    projectId: PydanticObjectId | None = None
 
     class Settings:
         name = "contracts"
@@ -24,5 +25,15 @@ class Contract(ContractState, Document):
                 [("ownerId", ASCENDING), ("appliedRequirementId", ASCENDING)],
                 unique=True,
                 partialFilterExpression={"appliedRequirementId": {"$type": "string"}},
+            ),
+            IndexModel(
+                [("ownerId", ASCENDING), ("projectId", ASCENDING), ("version", ASCENDING)],
+                unique=True,
+                partialFilterExpression={"projectId": {"$type": "objectId"}},
+            ),
+            IndexModel(
+                [("ownerId", ASCENDING), ("projectId", ASCENDING), ("appliedRequirementId", ASCENDING)],
+                unique=True,
+                partialFilterExpression={"projectId": {"$type": "objectId"}, "appliedRequirementId": {"$type": "string"}},
             ),
         ]
