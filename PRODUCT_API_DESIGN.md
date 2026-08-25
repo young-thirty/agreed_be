@@ -30,7 +30,8 @@
 | 답변 전 확인 항목 | `POST /api/requests/{requestId}/checklist` | `{ items: string[] }` |
 | 답변 초안 생성 | `POST /api/requests/{requestId}/reply-draft` | `{ body: string }` |
 | 대응 상태 변경 | `PATCH /api/requests/{requestId}/response-status` | 동일 DTO |
-| 자료 탭 | `GET /api/projects/{projectId}/materials` | `ProjectMaterialSummary[]` |
+| 자료 탭 | `GET /api/projects/{projectId}/materials?ticketId=` | `ProjectMaterialSummary[]` |
+| 자료 티켓 할당·해제 | `PATCH /api/projects/{projectId}/materials/{materialId}` | `ProjectMaterialSummary` |
 
 정렬은 `status`(기본: ACTIVE→DRAFT→COMPLETED, 동률 updatedAt 내림차순),
 `updatedAt` 내림차순, `createdAt` 내림차순만 허용한다. 잘못된 enum/sort는 422,
@@ -84,9 +85,9 @@ ClientRequestSummary
   responseStatus:ResponseStatus
 
 ProjectMaterialSummary
-  materialId:string, projectId:string, fileName:string, direction:Direction
+  materialId:string, projectId:string, ticketId:string|null, fileName:string, direction:Direction
   communicatedAt:datetime, classificationStatus:ProcessingStatus
-  documentType:DocumentType|null
+  documentType:DocumentType|null, summary:string|null
 ```
 
 Signup은 name/email/password/phoneNumber가 모두 필수다. 기존 시연 계정만

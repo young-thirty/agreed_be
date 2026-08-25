@@ -33,14 +33,12 @@ from infra.integrations.gmail import (
 )
 from infra.integrations.slack import fetch_file, fetch_history
 from infra.llm.client import EXTRACT_MODEL
-from infra.llm.harness import run_json
+from infra.llm.materials import classify_project_material
 from infra.llm.orchestrator import AnalyzedRequest, analyze_request_message
 from infra.llm.subagents.checklist import build_checklist
 from infra.llm.subagents.git_explore import ask_repository
 from infra.llm.subagents.reply_draft import build_reply_draft
 from infra.llm.subagents.ticket_advice import build_ticket_advice
-from infra.llm.prompts import PROJECT_MATERIAL_SYSTEM_PROMPT
-from infra.llm.schemas import MaterialClassificationResult
 from infra.security.provider_tokens import TokenEncryptionError
 from infra.storage.s3 import has_s3, put_object
 from models import (
@@ -272,6 +270,10 @@ class TicketStatusRequest(BaseModel):
     ticketStatus: TicketStatus
 
 
+class MaterialTicketRequest(BaseModel):
+    ticketId: PydanticObjectId | None = None
+
+
 async def _owned_request(request_id: PydanticObjectId, owner_id: PydanticObjectId) -> ClientRequest | None:
     return await ClientRequest.find_one(
         ClientRequest.id == request_id, ClientRequest.ownerId == owner_id
@@ -303,22 +305,31 @@ async def ticket_solution(
     advice = await build_ticket_advice(
         owner_id=item.ownerId,
         project_id=item.projectId,
+        ticket_id=item.id,
         summary_title=item.summaryTitle or "제목 없는 요청",
         decision=item.aiDecisionStatus or "판정 없음",
         request_quote=item.requestEvidence[0].quote if item.requestEvidence else "",
     )
 
-    # 관련 파일은 AI에게 고르게 하지 않는다. 이 프로젝트에 어떤 자료가 있는지는
-    # DB가 아는 사실이라 추론할 대상이 아니다.
-    materials = (
-        await ProjectMaterial.find(
-            ProjectMaterial.ownerId == item.ownerId,
-            ProjectMaterial.projectId == item.projectId,
+    # 현재 티켓 전용 자료를 먼저 쓰고, 모자란 자리는 프로젝트 공용 자료로 채운다.
+    # 다른 티켓 전용 자료가 섞이면 근거가 뒤바뀌므로 가져오지 않는다.
+    materials = await ProjectMaterial.find(
+        ProjectMaterial.ownerId == item.ownerId,
+        ProjectMaterial.projectId == item.projectId,
+        ProjectMaterial.ticketId == item.id,
+    ).sort(-ProjectMaterial.communicatedAt).limit(5).to_list()
+    if len(materials) < 5:
+        shared_materials = (
+            await ProjectMaterial.find(
+                ProjectMaterial.ownerId == item.ownerId,
+                ProjectMaterial.projectId == item.projectId,
+                ProjectMaterial.ticketId == None,  # noqa: E711 - MongoDB null 조건
+            )
+            .sort(-ProjectMaterial.communicatedAt)
+            .limit(5 - len(materials))
+            .to_list()
         )
-        .sort(-ProjectMaterial.communicatedAt)
-        .limit(5)
-        .to_list()
-    )
+        materials.extend(shared_materials)
     item.solution = TicketSolution(
         adviceMessage=advice.adviceMessage,
         adviceReason=advice.adviceReason,
@@ -329,6 +340,7 @@ async def ticket_solution(
                 materialId=str(material.id),
                 fileName=material.fileName,
                 documentType=material.documentType,
+                summary=material.summary,
             )
             for material in materials
         ],
@@ -407,14 +419,66 @@ async def update_ticket_status(
 
 
 @router.get("/projects/{project_id}/materials", tags=["request"])
-async def project_materials(project_id: PydanticObjectId, current_user: User | None = Depends(get_current_user)):
+async def project_materials(
+    project_id: PydanticObjectId,
+    ticketId: PydanticObjectId | None = None,
+    current_user: User | None = Depends(get_current_user),
+):
     project, error = await _project_or_404(project_id, current_user)
     if error:
         return error
-    materials = await ProjectMaterial.find(
-        ProjectMaterial.ownerId == current_user.id, ProjectMaterial.projectId == project.id
-    ).sort(-ProjectMaterial.communicatedAt).to_list()
+    filters = [
+        ProjectMaterial.ownerId == current_user.id,
+        ProjectMaterial.projectId == project.id,
+    ]
+    if ticketId is not None:
+        ticket = await ClientRequest.find_one(
+            ClientRequest.id == ticketId,
+            ClientRequest.ownerId == current_user.id,
+            ClientRequest.projectId == project.id,
+        )
+        if ticket is None:
+            return fail("티켓을 찾을 수 없습니다.", 404)
+        filters.append(ProjectMaterial.ticketId == ticket.id)
+    materials = (
+        await ProjectMaterial.find(*filters)
+        .sort(-ProjectMaterial.communicatedAt)
+        .to_list()
+    )
     return ok([public_material(item) for item in materials])
+
+
+@router.patch("/projects/{project_id}/materials/{material_id}", tags=["request"])
+async def assign_material_ticket(
+    project_id: PydanticObjectId,
+    material_id: PydanticObjectId,
+    body: MaterialTicketRequest,
+    current_user: User | None = Depends(get_current_user),
+):
+    """자료를 티켓에 할당한다. ticketId=null이면 프로젝트 공용으로 되돌린다."""
+
+    project, error = await _project_or_404(project_id, current_user)
+    if error:
+        return error
+    material = await ProjectMaterial.find_one(
+        ProjectMaterial.id == material_id,
+        ProjectMaterial.ownerId == current_user.id,
+        ProjectMaterial.projectId == project.id,
+    )
+    if material is None:
+        return fail("자료를 찾을 수 없습니다.", 404)
+    if body.ticketId is not None:
+        ticket = await ClientRequest.find_one(
+            ClientRequest.id == body.ticketId,
+            ClientRequest.ownerId == current_user.id,
+            ClientRequest.projectId == project.id,
+        )
+        if ticket is None:
+            return fail("티켓을 찾을 수 없습니다.", 404)
+    material.ticketId = body.ticketId
+    material.updatedAt = _now()
+    await material.save()
+    return ok(public_material(material))
 
 
 @router.get("/projects/{project_id}/source-links", tags=["ingest"])
@@ -553,18 +617,19 @@ async def _ensure_material_run(material: ProjectMaterial) -> AnalysisRun:
     input_hash = _hash((material.contentHash or material.fileName) + str(material.id))
     existing = await AnalysisRun.find_one(
         AnalysisRun.ownerId == material.ownerId, AnalysisRun.targetType == "MATERIAL_CLASSIFICATION",
-        AnalysisRun.inputHash == input_hash, AnalysisRun.promptVersion == "v1",
+        AnalysisRun.inputHash == input_hash, AnalysisRun.promptVersion == "v2-summary",
     )
     if existing:
         return existing
     run = AnalysisRun(ownerId=material.ownerId, projectId=material.projectId, targetType="MATERIAL_CLASSIFICATION",
-                      materialId=material.id, inputHash=input_hash, model=EXTRACT_MODEL)
+                      materialId=material.id, inputHash=input_hash, model=EXTRACT_MODEL,
+                      promptVersion="v2-summary")
     try:
         await run.insert()
     except DuplicateKeyError:
         existing = await AnalysisRun.find_one(
             AnalysisRun.ownerId == material.ownerId, AnalysisRun.targetType == "MATERIAL_CLASSIFICATION",
-            AnalysisRun.inputHash == input_hash, AnalysisRun.promptVersion == "v1",
+            AnalysisRun.inputHash == input_hash, AnalysisRun.promptVersion == "v2-summary",
         )
         if existing:
             return existing
@@ -710,6 +775,17 @@ def _document_type_from_name(file_name: str) -> DocumentType:
     return "OTHER"
 
 
+def _fallback_material_summary(file_name: str, kind: DocumentType) -> str:
+    labels = {
+        "PROPOSAL": "제안서",
+        "CONTRACT": "계약서",
+        "REQUIREMENTS": "요구사항 문서",
+        "MEETING_NOTES": "회의 기록",
+        "OTHER": "프로젝트 자료",
+    }
+    return f"{file_name} 파일은 {labels[kind]}로 분류되었습니다. 원문 내용은 직접 확인해 주세요."
+
+
 async def classify_material_run(run_id: str):
     run = await AnalysisRun.get(PydanticObjectId(run_id))
     if run is None or run.materialId is None:
@@ -724,18 +800,24 @@ async def classify_material_run(run_id: str):
     await run.save()
     try:
         kind: DocumentType | None = None
+        summary: str | None = None
         if material.extractedText:
-            classified = await run_json(
-                system_prompt=PROJECT_MATERIAL_SYSTEM_PROMPT,
-                user_content=f"파일명: {material.fileName}\n텍스트: {material.extractedText[:8000]}",
-                schema=MaterialClassificationResult,
+            classified = await classify_project_material(
+                file_name=material.fileName,
+                extracted_text=material.extractedText,
             )
-            kind = classified.documentType if classified else None
+            if classified:
+                kind, summary = classified.documentType, classified.summary
         # 추출된 텍스트가 없거나 모델이 답하지 못하면 파일명으로 정한다.
         # 분류 자체를 실패로 두면 자료 탭이 비어 보인다.
         if kind is None:
             kind = _document_type_from_name(material.fileName)
-        material.documentType, material.classificationStatus, material.updatedAt = kind, "COMPLETED", _now()
+        if not summary:
+            summary = _fallback_material_summary(material.fileName, kind)
+        material.documentType = kind
+        material.summary = summary
+        material.classificationStatus = "COMPLETED"
+        material.updatedAt = _now()
         await material.save()
         run.status, run.completedAt, run.updatedAt = "COMPLETED", _now(), _now()
         await run.save()
@@ -957,4 +1039,3 @@ async def apply_project_contract(project_id: PydanticObjectId, body: ContractApp
         return fail("계약이 동시에 변경됐습니다. 다시 시도해 주세요.", 409)
     from app.public_data import public_contract
     return ok({"contract": public_contract(next_contract), "diff": diff_contract(contract, next_state)})
-

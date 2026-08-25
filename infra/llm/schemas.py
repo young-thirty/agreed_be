@@ -66,6 +66,7 @@ class RequestAnalysisResult(BaseModel):
 
 class MaterialClassificationResult(BaseModel):
     documentType: DocumentType
+    summary: str = Field(min_length=1, max_length=300)
 
 
 # --- 서브 에이전트 출력 -------------------------------------------------------

@@ -14,6 +14,8 @@ def utc_now() -> datetime:
 class ProjectMaterial(Document):
     ownerId: PydanticObjectId
     projectId: PydanticObjectId
+    # None이면 프로젝트 공용 자료, 값이 있으면 해당 티켓 전용 자료다.
+    ticketId: PydanticObjectId | None = None
     origin: MaterialOrigin = "CHANNEL"
     sourceMessageId: PydanticObjectId | None = None
     connectionId: str | None = None
@@ -27,6 +29,7 @@ class ProjectMaterial(Document):
     communicatedAt: datetime
     classificationStatus: ProcessingStatus = "PENDING"
     documentType: DocumentType | None = None
+    summary: str | None = Field(default=None, max_length=300)
     contentHash: str | None = None
     createdAt: datetime = Field(default_factory=utc_now)
     updatedAt: datetime = Field(default_factory=utc_now)
@@ -35,6 +38,7 @@ class ProjectMaterial(Document):
         name = "project_materials"
         indexes = [
             IndexModel([("ownerId", ASCENDING), ("projectId", ASCENDING), ("communicatedAt", DESCENDING)]),
+            IndexModel([("ownerId", ASCENDING), ("ticketId", ASCENDING)]),
             IndexModel([("ownerId", ASCENDING), ("sourceMessageId", ASCENDING)]),
             IndexModel(
                 [("ownerId", ASCENDING), ("connectionId", ASCENDING), ("providerFileId", ASCENDING)],

@@ -61,11 +61,13 @@ class ClientRequestSummary(BaseModel):
 class ProjectMaterialSummary(BaseModel):
     materialId: str
     projectId: str
+    ticketId: str | None = None
     fileName: str
     direction: Direction
     communicatedAt: datetime
     classificationStatus: ProcessingStatus
     documentType: DocumentType | None = None
+    summary: str | None = None
 
 
 class RelatedFile(BaseModel):
@@ -74,6 +76,7 @@ class RelatedFile(BaseModel):
     materialId: str
     fileName: str
     documentType: DocumentType | None = None
+    summary: str | None = None
 
 
 class TicketSolution(BaseModel):

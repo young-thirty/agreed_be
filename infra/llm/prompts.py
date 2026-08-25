@@ -190,9 +190,11 @@ quote는 입력 원문에 실제로 존재하는 짧은 문장만 그대로 인�
 """
 
 
-PROJECT_MATERIAL_SYSTEM_PROMPT = """파일 이름과 추출된 텍스트를 보고 문서 종류를 하나 고른다.
-반드시 PROPOSAL, CONTRACT, REQUIREMENTS, MEETING_NOTES, OTHER 중 하나만 JSON으로 반환한다.
-근거가 부족하면 OTHER를 반환한다: {"documentType": string}
+PROJECT_MATERIAL_SYSTEM_PROMPT = """파일 이름과 추출된 텍스트를 보고 문서 종류를 하나 고르고,
+프리랜서가 자료 목록에서 바로 이해할 수 있도록 실제 텍스트에 근거한 한국어 요약을 한두 문장으로 작성한다.
+documentType은 반드시 PROPOSAL, CONTRACT, REQUIREMENTS, MEETING_NOTES, OTHER 중 하나다.
+근거가 부족하면 OTHER를 반환하고 모르는 내용을 지어내지 않는다.
+반드시 다음 JSON만 반환한다: {"documentType": string, "summary": string}
 """
 
 

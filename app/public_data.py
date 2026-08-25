@@ -57,9 +57,11 @@ def public_material(material: ProjectMaterial) -> dict[str, object]:
     return {
         "materialId": str(material.id),
         "projectId": str(material.projectId),
+        "ticketId": str(material.ticketId) if material.ticketId else None,
         "fileName": material.fileName,
         "direction": material.direction,
         "communicatedAt": material.communicatedAt.isoformat() + ("Z" if material.communicatedAt.tzinfo is None else ""),
         "classificationStatus": material.classificationStatus,
         "documentType": material.documentType,
+        "summary": material.summary,
     }
