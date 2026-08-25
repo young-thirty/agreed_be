@@ -16,7 +16,10 @@ from fastapi.responses import JSONResponse
 
 
 def ok(data: Any) -> JSONResponse:
-    return JSONResponse({"ok": True, "data": jsonable_encoder(data)})
+    # by_alias=False가 중요하다. Beanie Document의 id 필드에는 alias='_id'가
+    # 붙어 있어서, jsonable_encoder 기본값(by_alias=True)으로 내보내면 응답이
+    # "_id"가 된다. 프론트엔드는 "id"를 기대하므로 그대로 두면 조용히 깨진다.
+    return JSONResponse({"ok": True, "data": jsonable_encoder(data, by_alias=False)})
 
 
 def fail(error: str, status: int = 400) -> JSONResponse:
