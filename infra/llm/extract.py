@@ -17,15 +17,19 @@ from infra.llm.schemas import ExtractResult
 from models.requirement import Requirement
 
 
-async def _extract(utterances: Sequence) -> ExtractResult:
+async def _extract(utterances: Sequence, context: str) -> ExtractResult:
     """L1: JSON mode로 받아 Pydantic으로 검증한다.
 
     검증 실패 시 1회 재시도하고 그래도 안 되면 빈 결과로 넘어가는 규칙은
     infra/llm/harness.py가 담당한다. 무한 재시도는 하지 않는다.
+
+    context는 대화 앞에 붙는 맥락이다. 이게 없으면 모델이 누가 요구하는
+    쪽인지 몰라 요구사항을 통째로 놓친다.
     """
+    conversation = build_conversation_text(utterances)
     result = await run_json(
         system_prompt=EXTRACT_SYSTEM_PROMPT,
-        user_content=build_conversation_text(utterances),
+        user_content=f"{context}\n{conversation}" if context else conversation,
         schema=ExtractResult,
     )
     return result or ExtractResult(items=[])
@@ -34,8 +38,13 @@ async def _extract(utterances: Sequence) -> ExtractResult:
 async def extract_requirements(
     utterances: Sequence,
     existing: Sequence[Requirement] = (),
-) -> list[RequirementState]:
+    context: str = "",
+) -> list[tuple[str | None, RequirementState]]:
     """대화에서 요구사항을 뽑아 검증까지 마친 목록을 돌려준다.
+
+    (기존 요구사항 id, 요구사항) 쌍으로 돌려준다. id가 있으면 그 카드를
+    갱신하라는 뜻이고, None이면 새 카드다. 호출부가 제목만 보고 같은
+    요구사항인지 짐작하지 않게 하려고 여기서 짝을 지어 넘긴다.
 
     existing은 재분석 대상이다. 모델이 existingId로 기존 카드를 가리키면 그
     카드의 현재 status를 demote의 기준으로 쓴다. 신규 항목은 '미확정'에서
@@ -48,10 +57,10 @@ async def extract_requirements(
     if result is None:
         if not has_api_key():
             return []
-        result = await _extract(utterances)
+        result = await _extract(utterances, context)
 
     existing_by_id = {str(r.id): r for r in existing}
-    requirements: list[RequirementState] = []
+    requirements: list[tuple[str | None, RequirementState]] = []
 
     for item in result.items:
         # L2: 근거가 전부 허구면 항목을 버린다. 일부만 실패하면 나머지는 살린다.
@@ -66,18 +75,21 @@ async def extract_requirements(
         current_status = previous.status if previous else "미확정"
 
         requirements.append(
-            RequirementState(
-                title=item.title,
-                # L3: 이전 상태에서 도달 불가능하면 거부하지 않고 '미확정'으로 내린다.
-                status=demote(current_status, item.proposedStatus),
-                evidence=grounded,
-                basis=previous.basis if previous else {"kind": "없음"},
-                aiProposedDecision=(
-                    None
-                    if item.proposedDecision is None
-                    else item.proposedDecision.model_dump()
+            (
+                str(previous.id) if previous is not None else None,
+                RequirementState(
+                    title=item.title,
+                    # L3: 이전 상태에서 도달 불가능하면 거부하지 않고 '미확정'으로 내린다.
+                    status=demote(current_status, item.proposedStatus),
+                    evidence=grounded,
+                    basis=previous.basis if previous else {"kind": "없음"},
+                    aiProposedDecision=(
+                        None
+                        if item.proposedDecision is None
+                        else item.proposedDecision.model_dump()
+                    ),
+                    decision=previous.decision if previous else None,
                 ),
-                decision=previous.decision if previous else None,
             )
         )
 

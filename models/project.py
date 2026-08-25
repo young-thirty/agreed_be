@@ -15,6 +15,9 @@ class Project(Document):
     ownerId: PydanticObjectId
     name: str = Field(min_length=1, max_length=120)
     clientName: str = Field(min_length=1, max_length=120)
+    # 이 주소와 주고받은 메일에서 요구사항을 뽑는다. 계약 시점에 모를 수 있어 선택이다.
+    clientEmail: str | None = Field(default=None, max_length=320)
+    description: str = Field(default="", max_length=1000)
     startDate: date | None = None
     endDate: date | None = None
     contractPrice: int | None = Field(default=None, ge=0)

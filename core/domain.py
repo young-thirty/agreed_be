@@ -9,6 +9,7 @@ types/index.ts가 이미 이 이름으로 응답을 기대하고 있어서, 여�
 필드가 사라지므로, 이름을 그대로 맞추는 쪽을 택했다.
 """
 
+from datetime import datetime, timezone
 from typing import Annotated, Literal, Union
 
 from pydantic import BaseModel, Field
@@ -43,6 +44,11 @@ REQUIREMENT_STATUS: tuple[RequirementStatus, ...] = (
 
 # 카카오톡은 공개 API가 없어 자동 수집이 불가능하므로 채널로 두지 않는다.
 Channel = Literal["이메일", "슬랙"]
+
+# 답변 초안의 말투. 같은 내용을 관계와 상황에 맞게 다르게 표현한다.
+#
+# 무엇을 말할지(수락·거절·검토)는 여기 없다. 그건 사람이 고른 상태가 정한다.
+Tone = Literal["friendly", "professional", "concise", "firm"]
 
 
 class Utterance(BaseModel):
@@ -130,6 +136,34 @@ class ContractDiff(BaseModel):
 # --- 요구사항 ------------------------------------------------------------
 
 
+class StatusChange(BaseModel):
+    """상태가 언제 어떻게 바뀌었는지. 요구사항 타임라인이 이 기록을 그린다.
+
+    byHuman이 사람의 확정과 AI 재분석을 가른다. 화면에서 둘을 같은 색으로
+    그리면, 아직 아무도 확인하지 않은 변화가 확정된 것처럼 보인다.
+    """
+
+    at: str  # ISO
+    fromStatus: RequirementStatus | None  # 처음 만들어졌으면 None
+    toStatus: RequirementStatus
+    byHuman: bool
+
+
+def status_change(
+    previous: RequirementStatus | None,
+    current: RequirementStatus,
+    *,
+    by_human: bool,
+) -> StatusChange:
+    """지금 시각으로 상태 변경 기록을 만든다."""
+    return StatusChange(
+        at=datetime.now(timezone.utc).isoformat(),
+        fromStatus=previous,
+        toStatus=current,
+        byHuman=by_human,
+    )
+
+
 class RequirementState(BaseModel):
     title: str
     status: RequirementStatus
@@ -137,3 +171,5 @@ class RequirementState(BaseModel):
     basis: Basis
     aiProposedDecision: Decision | None = None
     decision: Decision | None = None
+    # 상태가 바뀐 기록. 오래된 것부터 쌓인다.
+    history: list[StatusChange] = Field(default_factory=list)
