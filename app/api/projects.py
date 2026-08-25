@@ -17,6 +17,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from pymongo.errors import DuplicateKeyError
 
+from app.api.slack import SAFE_INLINE_IMAGE_TYPES
 from app.auth import get_current_user
 from app.integration_store import (
     access_token, github_connection, latest_gmail_connection, slack_connection,
@@ -451,16 +452,21 @@ async def download_material_file(
         if content is None:
             return fail("원본 파일이 아직 없습니다. 파일이 크거나 저장에 실패했을 수 있습니다.", 404)
 
+    # Slack 파일 응답(app/api/slack.py)과 같은 정책이다. 이미지 몇 종만
+    # inline을 허락하고 나머지는 브라우저가 직접 렌더링하지 않도록 강제한다.
+    # 화면의 PDF·DOCX 뷰어는 이 응답을 fetch로 받아 blob으로 다루기 때문에
+    # Content-Disposition·Content-Type이 attachment/octet-stream이어도 상관없다
+    # — 화면이 이미 알고 있는 MIME 타입으로 다시 씌워서 보여준다.
+    inline = (material.mimeType or "") in SAFE_INLINE_IMAGE_TYPES
     encoded_name = quote(material.fileName)
-    # PDF는 브라우저가 바로 읽을 수 있어 새 탭으로 열면 그대로 보인다.
-    # 그 외에는 화면이 fetch로 받아 직접 다루거나(예: docx 변환), 다운로드로 받는다.
-    disposition = "inline" if material.mimeType == "application/pdf" else "attachment"
     return Response(
         content=content,
-        media_type=material.mimeType or "application/octet-stream",
+        media_type=material.mimeType if inline else "application/octet-stream",
         headers={
-            "Content-Disposition": f"{disposition}; filename*=UTF-8''{encoded_name}",
             "Cache-Control": "private, no-store",
+            "Content-Disposition": f"{'inline' if inline else 'attachment'}; filename*=UTF-8''{encoded_name}",
+            "Content-Security-Policy": "default-src 'none'; sandbox",
+            "X-Content-Type-Options": "nosniff",
         },
     )
 
@@ -854,7 +860,6 @@ async def _fetch_material_live(material: ProjectMaterial, owner: User) -> bytes 
         # 메시지를 다시 찾아 이번 토큰을 새로 받는다.
         downloaded = await fetch_message_attachment(
             access_token=token, message_id=message_id, part_id=part_id,
-            file_name=material.fileName, mime_type=material.mimeType or "application/octet-stream",
         )
     except Exception:
         return None

@@ -409,14 +409,12 @@ async def fetch_attachment(
     )
 
 
-def _find_attachment_id_by_part(part: dict[str, Any], part_id: str) -> str | None:
+def _find_part_by_id(part: dict[str, Any], part_id: str) -> dict[str, Any] | None:
     if part.get("partId") == part_id:
-        body = part.get("body")
-        attachment_id = body.get("attachmentId") if isinstance(body, dict) else None
-        return attachment_id if isinstance(attachment_id, str) else None
+        return part
     for child in part.get("parts") or []:
         if isinstance(child, dict):
-            found = _find_attachment_id_by_part(child, part_id)
+            found = _find_part_by_id(child, part_id)
             if found is not None:
                 return found
     return None
@@ -427,8 +425,6 @@ async def fetch_message_attachment(
     access_token: str,
     message_id: str,
     part_id: str,
-    file_name: str,
-    mime_type: str,
 ) -> DownloadedGmailAttachment:
     """목록 조회와 시점이 떨어진 다운로드는 이 함수를 쓴다.
 
@@ -437,14 +433,23 @@ async def fetch_message_attachment(
     유효하지 않다. 그래서 메시지를 다시 조회해 이번 토큰을 새로 받은 뒤에만
     쓴다. part_id(메시지 안에서 이 파트의 위치)는 메시지가 안 바뀌는 한
     그대로라서, 이걸로 같은 첨부를 다시 찾는다.
+
+    파일 이름·MIME 타입도 이때 다시 읽은 값을 쓴다. 호출자가 예전에 들고
+    있던 값을 넘겨받지 않는다 — 메시지가 안 바뀌었다면 어차피 같은 값이고,
+    다르다면 지금 실제로 있는 값을 쓰는 게 맞다.
     """
     async with create_http_client() as client:
         message = await _gmail_get(client, f"messages/{message_id}?format=full", access_token)
     payload = message.get("payload")
-    attachment_id = _find_attachment_id_by_part(payload, part_id) if isinstance(payload, dict) else None
-    if attachment_id is None:
+    part = _find_part_by_id(payload, part_id) if isinstance(payload, dict) else None
+    if part is None:
+        raise IntegrationError("Gmail에서 이 첨부를 다시 찾지 못했습니다.")
+    body = part.get("body")
+    attachment_id = body.get("attachmentId") if isinstance(body, dict) else None
+    filename = part.get("filename")
+    if not isinstance(attachment_id, str) or not isinstance(filename, str) or not filename:
         raise IntegrationError("Gmail에서 이 첨부를 다시 찾지 못했습니다.")
     return await fetch_attachment(
         access_token=access_token, message_id=message_id, attachment_id=attachment_id,
-        file_name=file_name, mime_type=mime_type,
+        file_name=filename, mime_type=str(part.get("mimeType") or "application/octet-stream"),
     )
