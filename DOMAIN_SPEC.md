@@ -1,7 +1,7 @@
-# Agreed 도메인 명세와 미결정 항목 설계안
+# Agreed 도메인 명세와 정책 결정
 
 > 프로젝트·티켓·이벤트의 관계, 메시지가 들어와 티켓이 되기까지의 분기,
-> 그리고 아직 정하지 않았던 정책 9건의 설계안을 담는다.
+> 그리고 티켓 하나에 붙는 AI 솔루션 패키지를 정의한다.
 >
 > 화면 흐름은 [USER_FLOW.md](./USER_FLOW.md), 에이전트 구조는
 > [AI_AGENTS.md](./AI_AGENTS.md), 현재 확정 DTO는
@@ -19,34 +19,41 @@ Outbound  프리랜서 → 클라이언트
 채널      Gmail, Slack (카카오톡은 공개 API가 없어 지원하지 않는다)
 ```
 
-LLM이 보조하는 판단은 다섯 가지다.
-
-- 외주 관련 메시지인가
-- 어느 프로젝트에 속하는가
-- 기존 티켓과 관련 있는가
-- 새 티켓을 만들어야 하는가
-- Draft 프로젝트를 Active 또는 Rejected로 전환할 만한가
-
 **LLM은 MongoDB를 직접 수정하지 않는다.** 구조화된 판단만 반환하고, 백엔드가
-검증한 뒤 허용된 변경만 적용한다.
+검증한 뒤 허용된 변경만 적용한다. 근거 인용이 원문에 실제로 없으면 그 판단은
+버린다.
 
 ---
 
-## 2. 세 가지 상태를 헷갈리지 않기
+## 2. 세 가지 상태
 
-이름이 비슷해서 가장 많이 섞이는 지점이다.
+이름이 비슷해 가장 많이 섞이는 지점이다.
 
-| 필드 | 붙는 곳 | 값 | 뜻 |
-|---|---|---|---|
-| `projectStatus` | 프로젝트 | `draft` `active` `completed` `rejected` | 프로젝트 **자체**의 현재 상태 |
-| `projectClassification` | 이벤트 | `draft` `active` `none` | 이 **메시지**가 연결된 프로젝트 단계 |
-| `ticketStatus` | 티켓 | `active` `pending` `done` `rejected` | 티켓 **자체**의 현재 상태 |
+| 필드 | 붙는 곳 | 값 |
+|---|---|---|
+| `projectStatus` | 프로젝트 | `draft` `active` `completed` `rejected` |
+| `projectClassification` | 이벤트 | `draft` `active` `none` |
+| `ticketStatus` | 티켓 | `active` `done` `rejected` |
 
 `projectClassification`은 메시지가 도착한 시점의 스냅샷이다. 나중에 프로젝트가
 `completed`가 되어도 그때 저장된 이벤트의 분류는 `active` 그대로 남는다.
-이력이 흔들리지 않게 하려는 것이다.
 
-### 티켓 생성 규칙
+### 2.1 티켓 상태
+
+```text
+active (기본)  →  done      사람이 대응을 끝냈다
+              →  rejected  받지 않기로 했다
+```
+
+**티켓은 항상 `active`로 생성된다.** `pending`은 두지 않는다 — `active`와의 경계가
+사람마다 달라 아무도 쓰지 않는 상태가 되기 때문이다.
+
+**상태 전이는 사람만 한다. AI는 제안조차 하지 않는다.** "이 요청에 대응이
+끝났는가"는 메시지만 봐서 알 수 없다. 프리랜서가 실제로 작업했는지, 클라이언트가
+납득했는지는 대화 밖에서 일어난다. 자동화하면 열려 있어야 할 티켓이 닫히고,
+그게 곧 놓친 요청이 된다.
+
+### 2.2 티켓 생성 규칙
 
 **티켓은 Inbound로만 생성된다.** Outbound는 기존 티켓을 업데이트할 수 있지만
 새 티켓을 만들 수 없다.
@@ -59,320 +66,357 @@ LLM이 보조하는 판단은 다섯 가지다.
 ## 3. 처리 우선순위
 
 ```text
-1. 코드로 확정할 수 있는 값      ← 가장 먼저, 가장 싸다
+1. 코드로 확정할 수 있는 값
 2. DB 조회로 확정할 수 있는 값
 3. LLM 판단이 필요한 값
 4. 확신이 부족하면 manual_review
 ```
 
-이 순서가 설계 전체를 지배한다. 8절의 Slack 채널 제약도, 5절의 confidence 구간도
-전부 "LLM에게 물어볼 것을 줄인다"는 같은 목적에서 나왔다.
-
 ---
 
-## 4. 미결정 항목 설계안
+## 4. 인바운드 → 티켓 매칭
 
-명세 12절이 남긴 9건이다. 각각 **결정 / 근거** 순으로 적는다.
+새 인바운드가 들어오면 **기존 티켓에 붙일지, 새 티켓을 만들지**를 정해야 한다.
 
----
-
-### 4.1 같은 클라이언트 이메일이 여러 프로젝트에 있을 때
-
-**결정.** 백엔드가 후보를 좁히고, LLM은 그 후보 중에서만 고른다.
+### 4.1 방식: 임베딩 없이 컨텍스트로 푼다
 
 ```text
-1. clientEmails에 해당 주소가 있는 프로젝트를 전부 찾는다
-2. completed·rejected는 후보에서 뺀다 (4.9는 예외로 따로 처리)
-3. 후보가 1개  → 코드가 확정한다. LLM에게 묻지 않는다
-4. 후보가 2개+ → active를 draft보다 앞에 두고, 각각의 최근 이벤트 시각과
-                 진행 중인 티켓 제목을 함께 LLM에 넘긴다
-5. LLM confidence < 0.8 이거나 후보를 못 고르면 manual_review
+1. 이 프로젝트의 active 티켓을 최근 순으로 최대 20개 가져온다
+2. 각 티켓에서 id · title · summary만 뽑는다 (본문은 넣지 않는다)
+3. 새 인바운드 원문 + 티켓 목록을 한 번의 LLM 호출에 넣는다
+4. LLM이 ticketId 하나를 고르거나 null(새 티켓)을 반환한다
+5. 후보 목록 밖의 id를 내면 무효로 보고 새 티켓으로 처리한다
 ```
 
-**LLM은 백엔드가 준 후보 ID 목록 밖의 값을 낼 수 없다.** 낸다면 스키마 검증에서
-걸러 `manual_review`로 보낸다.
+**근거.** 벡터 DB와 임베딩 파이프라인을 두지 않는다. 한 프로젝트의 열린 티켓은
+현실적으로 수십 개를 넘지 않고, 제목만 넣으면 20개라도 컨텍스트가 1천 토큰
+안쪽이다. 인덱스를 만들고 갱신하는 비용이 이득보다 크다.
 
-**근거.** 잘못 귀속되면 티켓이 엉뚱한 계약에 붙고, 그 티켓이 나중에 계약 변경
-근거가 된다. 계약 분쟁이 도메인이라 오귀속 비용이 "한 번 더 묻는" 비용보다
-훨씬 크다. 그리고 후보가 1개일 때 LLM을 부르지 않는 것만으로 호출의 대부분이
-사라진다 — 실제로 한 클라이언트가 프로젝트 여러 개를 동시에 주는 경우는 드물다.
+`summary`까지만 넣고 본문을 넣지 않는 것도 같은 이유다. "이 요청이 저 티켓과
+같은 얘기인가"는 제목 수준에서 대부분 갈린다.
 
----
+상한 20개를 넘으면 최근 것만 본다. 오래된 티켓과 새 요청이 같은 건인 경우는
+드물고, 놓쳐도 새 티켓이 하나 더 생길 뿐 데이터가 깨지지 않는다.
 
-### 4.2 Draft → Active/Rejected 전환
+### 4.2 프로젝트 후보 선택
 
-**결정.** 자동화하지 않는다. **AI는 제안만 하고 사람이 누른다.**
+같은 클라이언트 이메일이 여러 프로젝트에 등록되어 있을 수 있다.
+
+**결정. 후보가 하나여도 항상 LLM에 묻는다.**
 
 ```text
-LLM이 review_transition을 제안
-  → project.pendingTransition에 기록만 한다
-     { to: "active" | "rejected", reason, evidence[], suggestedAt }
-  → 화면에 배너: "계약이 체결된 것 같습니다. 확인해 주세요"
-  → 사람이 누르면 PATCH /projects/{id}/status 로 전환
-  → 무시하면 pendingTransition은 다음 제안으로 덮인다
+1. clientEmails에 해당 주소가 있는 프로젝트를 찾는다
+2. completed·rejected는 후보에서 뺀다 (7절에서 따로 처리)
+3. 후보 목록 + 각 프로젝트의 이름·기간·진행 중인 티켓 제목을 LLM에 넘긴다
+4. LLM이 projectId 하나를 고른다
+5. 후보 목록 밖의 값을 내거나 고르지 못하면 manual_review
 ```
 
-**근거.** CLAUDE.md의 제품 원칙 그대로다 — "계약이 체결됐는가"는 사실 확인이지
-추론이 아니다. 실무에서도 "계약서 보냈습니다"와 "계약 체결됐습니다"는 다르고,
-날인·입금까지 가야 확정되는 경우가 많다.
+**근거.** 이메일 주소가 같다고 그 프로젝트 얘기인 것은 아니다. 같은 클라이언트가
+다른 건으로 연락하거나, 계약과 무관한 안부 메일을 보내는 경우가 흔하다. 주소만
+보고 코드가 확정하면 그런 메시지가 전부 프로젝트에 붙는다.
 
-그리고 `activatedAt`이 **계약 이력의 기준 시각**이 된다. 이후 모든 요구사항
-변경은 "계약 이후에 발생했는가"로 판정되므로, 이 시각이 하루만 틀려도 범위 밖
-요청이 범위 안으로 들어온다. AI가 정할 값이 아니다.
+LLM은 "이 메시지가 이 프로젝트 얘기인가"를 함께 판단하므로, 후보가 하나여도
+물어보는 편이 오귀속을 막는다. 호출 한 번의 비용보다 잘못 붙은 티켓을 사람이
+찾아 옮기는 비용이 크다.
 
 ---
 
-### 4.3 confidence 자동 적용 기준
+## 5. Draft → Active/Rejected 전환
 
-**결정.** confidence로 나누되, **되돌릴 수 있는 것만** 자동으로 한다.
+**결정. LLM이 판단한다.**
+
+### 5.1 트리거
+
+**두 경우에만 판단이 돈다.**
+
+```text
+(1) draft 프로젝트에 inbound 이벤트가 들어올 때
+(2) draft 프로젝트에 outbound 이벤트가 들어올 때
+```
+
+`active`·`completed`·`rejected` 프로젝트에는 이 판단을 돌리지 않는다. 전환은
+`draft`에서 나가는 한 방향뿐이다.
+
+### 5.2 입출력
+
+```json
+{
+  "transition": "active | rejected | stay",
+  "reason": "판단 이유 한두 문장",
+  "evidence": [{ "sourceId": "event_id", "quote": "실제 원문 문장" }]
+}
+```
+
+백엔드가 하는 일:
+
+- `evidence[].quote`가 원문에 실제로 있는지 확인한다 (`core/grounding.py`)
+- 없으면 전환하지 않고 `stay`로 떨어뜨린다
+- 전환하면 `activatedAt` 또는 `rejectedAt`을 기록한다
+- **전환 이력을 남긴다** — 무엇을 근거로 언제 바뀌었는지
+
+### 5.3 되돌릴 수 있게 둔다
+
+`activatedAt`은 이후 모든 범위 판정의 기준선이 된다. "이 요청이 계약 이후에
+생겼는가"가 이 시각으로 갈리기 때문에, 하루가 틀리면 범위 밖 요청이 범위 안으로
+들어온다.
+
+그래서 전환 자체는 AI가 하되 **이력과 근거를 남겨 사람이 되돌릴 수 있게** 한다.
+화면에서 "AI가 8/26 메일을 근거로 Active로 전환했습니다"를 보여주고, 아니면
+되돌리는 버튼을 둔다. 자동으로 하되 흔적을 남기지 않는 것이 가장 나쁘다.
+
+**계약 반영(`apply_to_contract`)은 여전히 사람만 한다.** 금액이 바뀌는 지점은
+전환과 성격이 다르다.
+
+---
+
+## 6. 티켓 솔루션 패키지
+
+**이 제품의 결과물이다.** 티켓 하나에 AI가 붙이는 산출물 묶음이다.
+
+```text
+프로젝트
+  └ 티켓 (클라이언트 요청 하나)
+      ├ 조언 메시지        무엇을 어떻게 할지
+      ├ 조언 이유          왜 그렇게 보는지
+      ├ 근거 조문          계약서·제안서의 실제 인용
+      ├ 관련 파일          이 판단에 쓰인 자료
+      └ 답변 초안          스타일별로 골라 쓰는 회신 문안
+```
+
+### 6.1 두 단계로 나눈다
+
+```text
+POST /api/tickets/{id}/solution        조언 + 이유 + 근거 + 파일   (한 번, 저장)
+POST /api/tickets/{id}/reply-draft     초안 하나                    (스타일마다 호출)
+```
+
+**근거.** 조언과 근거는 티켓당 한 번 만들면 되고 바뀌지 않는다. 저장해 두고 화면
+진입 때마다 다시 만들지 않는다.
+
+반면 초안은 사람이 스타일을 바꿔가며 여러 번 본다. 모든 스타일을 미리 만들면
+쓰지도 않을 초안에 토큰을 쓴다. 고른 스타일 하나만 그때 만든다.
+
+### 6.2 근거 조문과 파일
+
+```json
+{
+  "contractBasis": [
+    { "quote": "영문 페이지는 범위에 포함되지 않는다", "documentId": "...", "documentName": "계약서 v1" }
+  ],
+  "relatedFiles": [
+    { "materialId": "...", "fileName": "제안서.pdf", "documentType": "PROPOSAL" }
+  ]
+}
+```
+
+`quote`는 코드가 실제 문서와 다시 대조한다. 지어낸 인용이면 그 근거를 버리고,
+남은 근거가 없으면 조언에 "확인 가능한 근거가 부족합니다"를 붙인다.
+
+계약 대조는 이미 구현된 서브 에이전트(`infra/llm/subagents/contract_match.py`)가
+`read_contract`·`search_materials` 도구로 수행한다. 솔루션 패키지는 그 결과를
+사람이 읽을 문장으로 바꾸는 층이다.
+
+### 6.3 답변 초안 스타일
+
+스타일 목록은 **프론트가 정한다.** 백엔드는 문자열 키를 받고 톤 지시문을
+매핑한다.
+
+```python
+REPLY_STYLES = {
+    "plain":      "담백하고 사무적으로",
+    "polite":     "정중하고 완곡하게",
+    "witty":      "가볍고 친근하게, 다만 사안은 정확하게",
+    "firm":       "선을 분명히 긋되 예의는 지키며",
+}
+```
+
+**등록된 키만 받는다.** 모르는 키는 400으로 거절한다. 스타일을 늘리는 것은
+이 dict에 한 줄 추가하는 일이라 스키마를 고칠 필요가 없다.
+
+**근거.** 현재 코드는 `Tone = Literal["friendly","professional","concise","firm"]`로
+박혀 있어 스타일을 하나 늘릴 때마다 타입과 스키마를 함께 고쳐야 한다. 목록이
+아직 확정되지 않았으므로 열어 둔다.
+
+스타일이 바꾸는 것은 **말투뿐**이다. 무엇을 말할지 — 받아들일지, 금액을 부를지 —
+는 사람이 정한 값이 정하고, 스타일은 거기에 손대지 않는다.
+
+### 6.4 초안이 하지 않는 것
+
+- 금액과 날짜를 지어내지 않는다. 사람이 확정하지 않았으면 "확인 후 안내드리겠습니다"
+- 수락이나 거절을 단정하지 않는다
+- **발송하지 않는다.** 생성까지만이고 보내는 것은 사람이 복사해서 보낸다
+
+---
+
+## 7. 나머지 정책
+
+### 7.1 confidence 기준
 
 | confidence | 후보 | 동작 |
 |---|---|---|
 | `≥ 0.85` | 1개 | 자동 적용 |
 | `0.60 ~ 0.85` | 1개 | 적용하되 `needsReview: true` — 화면에 확인 배지 |
-| `< 0.60` | 무관 | `manual_review`. 아무것도 바꾸지 않는다 |
-| 무관 | 2개+ | `manual_review`. 임의 선택 금지 |
+| `< 0.60` | 무관 | `manual_review` |
+| 무관 | 2개+ | `manual_review` |
 
-**confidence가 아무리 높아도 자동으로 하지 않는 것:**
+confidence가 아무리 높아도 자동으로 하지 않는 것:
 
-- 프로젝트 상태 전환 (4.2)
-- 계약 반영 (`apply_to_contract`)
-- 티켓을 `done` 또는 `rejected`로 바꾸기
+- **계약 반영** (`apply_to_contract`)
+- **티켓을 `done`·`rejected`로 바꾸기** (2.1)
 
-**근거.** confidence는 모델의 자기보고이지 통계적 신뢰구간이 아니다. 0.9가
-90% 정확을 뜻하지 않는다. 그래서 "높으면 믿는다"가 아니라 **"틀렸을 때 되돌릴
-수 있는가"**로 선을 긋는다.
+근거: confidence는 모델의 자기보고이지 통계적 신뢰구간이 아니다. 0.9가 90%
+정확을 뜻하지 않는다. 그래서 "높으면 믿는다"가 아니라 **"틀렸을 때 되돌릴 수
+있는가"**로 선을 긋는다. 프로젝트 연결은 화면에서 옮기면 그만이고, 계약 버전
+N+1은 되돌려도 이력에 남는다.
 
-이벤트를 프로젝트에 연결한 것은 화면에서 옮기면 그만이다. 계약 버전 N+1을
-만든 것은 되돌려도 이력에 남는다. 이 둘을 같은 기준으로 다룰 수 없다.
+### 7.2 manual_review
 
----
-
-### 4.4 manual_review 화면과 처리
-
-**결정.** 별도 화면을 만들지 않는다. 대시보드의 **`확인 필요` 카운터에 합친다.**
+별도 화면을 만들지 않고 대시보드의 **`확인 필요` 카운터에 합친다.**
 
 ```text
-GET  /api/review-queue          processingStatus == manual_review 인 이벤트
+GET  /api/review-queue          processingStatus == manual_review
 POST /api/events/{id}/resolve   { projectId?, ticketId?, action }
-       action: link | create_ticket | create_project | discard
 ```
 
-각 항목은 원문, AI가 좁힌 후보들, 판단 근거 인용을 함께 보여준다.
+근거: 전용 화면을 만들면 아무도 안 들어간다. 사람이 매일 보는 숫자에 섞어야
+처리된다.
 
-**근거.** manual_review 전용 화면을 만들면 아무도 안 들어간다. 이미 사람이 매일
-보는 "확인 필요" 숫자에 섞어야 처리된다. 큐가 비어 있으면 화면에 아무것도 안
-보이므로 UI 부담도 없다.
+### 7.3 외주와 무관한 메일
 
----
-
-### 4.5 외주와 무관한 개인 메일
-
-**결정.** `projectClassification = none`인 이벤트는 **본문을 저장하지 않는다.**
+`projectClassification = none`인 이벤트는 **본문을 저장하지 않는다.**
 
 | 저장한다 | 저장하지 않는다 |
 |---|---|
-| `externalMessageId`, `occurredAt` | `bodyText` |
-| `aiDecision.outsourcingRelated = false` | `subject` 전문 |
-| 판단 근거 인용 1건 (200자 이내) | `attachments` |
+| `externalMessageId`, `occurredAt` | `bodyText`, `subject` 전문, `attachments` |
+| 판단 근거 인용 1건 (200자 이내) | |
 
-`expireAfterSeconds` TTL 인덱스로 **30일 뒤 자동 삭제**한다.
+TTL 인덱스로 30일 뒤 자동 삭제한다.
 
-**근거.** "이 메시지는 이미 봤고 외주와 무관했다"는 사실은 남아야 한다. 안
-남기면 polling 때마다 같은 메일을 다시 LLM에 넣게 되고, 비용과 시간이 계속 든다.
+근거: "이미 봤고 무관했다"는 사실이 없으면 polling 때마다 같은 메일을 다시 LLM에
+넣는다. 하지만 본문까지 남길 이유는 없다 — 사용자의 사적인 메일이고, 저장하는
+순간 유출 사고의 표면적이 된다.
 
-하지만 본문까지 남길 이유가 없다. 사용자의 사적인 메일이고, 저장하는 순간
-유출 사고의 표면적이 된다. 중복 방지에 필요한 것은 ID뿐이다.
+### 7.4 첨부파일 저장소
 
-TTL 인덱스는 이미 `models/session.py`에서 쓰고 있어 새 메커니즘이 아니다.
-
----
-
-### 4.6 첨부파일 저장소
-
-**결정.** **S3.** 이미 구현되어 있다.
+**S3.** 이미 구현되어 있다(`infra/storage/s3.py`, Terraform 버킷).
 
 ```text
-키 형식   materials/{ownerId}/{projectId}/{materialId}/{fileName}
-MongoDB   메타데이터와 storageKey만 (fileName, mimeType, sizeBytes)
-접근      public access 전면 차단. 서버 프록시로만 내려준다
-수명      30일 lifecycle 후 자동 삭제
+키       materials/{ownerId}/{projectId}/{materialId}/{fileName}
+MongoDB  메타데이터와 storageKey만
+접근     public access 차단, 서버 프록시로만
+수명     30일 lifecycle
 ```
 
-구현: `infra/storage/s3.py`, 버킷·IAM은 `deploy/terraform/main.tf`.
+### 7.5 계약 버전과 티켓
 
-**근거.** 배포가 이미 AWS App Runner라 인스턴스 role로 키 없이 접근된다. 별도
-자격증명을 만들고 관리할 필요가 없다. 프론트에 서명 URL을 내리지 않고 서버
-프록시를 고른 것은 Slack 파일(`GET /api/slack/file`)에서 이미 검증한 패턴이라
-경로가 하나로 통일되기 때문이다.
-
----
-
-### 4.7 계약 버전과 티켓 요구사항의 연결
-
-**결정.** **티켓 하나 = 계약 버전 하나.** 묶지 않는다.
+**티켓 하나가 계약 버전 하나를 만든다.** 여러 티켓을 묶어 한 버전으로 반영하지
+않는다.
 
 ```text
-ContractVersion N+1
-  appliedTicketId  : 이 버전을 만든 티켓
-Ticket
-  appliedContractVersion : 이 티켓이 반영된 버전 (없으면 null)
+ContractVersion N+1 . appliedTicketId
+Ticket . appliedContractVersion
 ```
 
-여러 티켓을 모아 한 버전으로 반영하지 않는다.
+모든 티켓이 계약 변경으로 가는 것은 아니다. 대부분은 솔루션 패키지(6절)를 보고
+답장하면 끝난다. 계약 밖 변경이라고 판정되고 사람이 합의까지 올린 티켓만
+`apply`를 탄다.
 
-**근거.** 묶으면 "어느 요청 때문에 금액이 300만 원 올랐는가"를 되짚을 수 없다.
-계약 분쟁이 도메인인 제품에서 이 추적이 끊기면 제품의 존재 이유가 사라진다.
-
-버전 번호가 커지는 것은 문제가 아니다. 버전은 사람에게 보이는 값이 아니라
-이력의 키다. 화면에는 "3차 변경: 영문 페이지 추가 (+50만 원)"처럼 티켓 제목으로
-보여주면 된다.
+근거: 묶으면 "어느 요청 때문에 금액이 300만 원 올랐는가"를 되짚을 수 없다.
+계약 분쟁이 도메인인 제품에서 이 추적이 끊기면 존재 이유가 사라진다. 버전 번호가
+커지는 것은 문제가 아니다 — 화면에는 "3차 변경: 영문 페이지 추가 (+50만 원)"처럼
+티켓 제목으로 보여주면 된다.
 
 멱등성은 `(ownerId, projectId, appliedTicketId)` unique 인덱스가 보장한다.
-같은 티켓을 두 번 반영해도 버전이 두 개 생기지 않는다.
 
----
+### 7.6 Slack 채널 공유
 
-### 4.8 Slack 채널을 여러 프로젝트가 공유할 수 있는가
+**불가. 채널 하나 = 프로젝트 하나.** `UNIQUE(ownerId, slackConnection.channelId)`
 
-**결정.** **불가. 채널 하나 = 프로젝트 하나.**
+근거: 허용하면 Slack 메시지마다 프로젝트를 LLM이 판단해야 하는데, Slack 메시지는
+짧고 맥락이 없다. "이거 언제까지 되나요?" 한 줄로 프로젝트를 맞히는 것은 사실상
+불가능하다. 제약을 두면 `channelId → projectId`가 코드로 확정된다(3절 우선순위 1).
 
-```text
-projects: UNIQUE(ownerId, slackConnection.channelId)
-```
+Gmail은 한 주소가 여러 프로젝트에 걸칠 수 있어 4.2의 LLM 판단이 필요하지만,
+Slack은 채널이라는 명확한 경계가 있어 그럴 필요가 없다.
 
-이미 다른 프로젝트에 연결된 채널을 등록하려 하면 409와 함께
-"이 채널은 이미 다른 프로젝트에 연결되어 있습니다"를 돌려준다.
+### 7.7 Completed 프로젝트에 새 메시지
 
-**근거.** 3절의 처리 우선순위가 이유 전부다.
-
-허용하면 Slack 메시지마다 "어느 프로젝트인가"를 LLM이 판단해야 한다. 그런데
-Slack 메시지는 짧고 맥락이 없다 — "이거 언제까지 되나요?" 한 줄에서 프로젝트를
-맞히는 것은 사실상 불가능하다.
-
-제약을 두면 `channelId → projectId`가 **코드로 확정**된다(우선순위 1). LLM은
-"이 요청이 기존 티켓과 관련 있는가"만 판단하면 되고, 이건 훨씬 쉬운 문제다.
-
-한 채널에 두 프로젝트 얘기가 섞이는 상황은 현실에 있지만, 그때는 채널을 나누는
-것이 사용자에게도 낫다. 제품이 그렇게 안내한다.
-
----
-
-### 4.9 Completed 프로젝트에 새 메시지가 올 때
-
-**결정.** 이벤트는 저장하고 연결하되, **티켓을 만들지 않고 사람에게 묻는다.**
+이벤트는 저장하고 연결하되 **티켓을 만들지 않고 사람에게 묻는다.**
 
 ```text
-이벤트 저장, projectId 연결
 projectClassification = active   (그 프로젝트 단계에서 온 것이므로)
 ticketId = null
 suggestedAction = manual_review
-→ 화면: "완료된 프로젝트에 새 요청이 들어왔습니다"
-→ 사람이 고른다:
-     프로젝트를 다시 active로  |  새 프로젝트 만들기  |  무시
+→ "완료된 프로젝트에 새 요청이 들어왔습니다"
+→ 다시 active로 | 새 프로젝트 만들기 | 무시
 ```
 
-**근거.** 완료 후 메시지는 두 가지 중 하나인데 겉으로는 구분이 안 된다.
-
-- **하자보수** — 원래 계약 범위 안이다. 프로젝트를 다시 열어야 한다
-- **추가 발주** — 새 계약이다. 새 프로젝트를 만들어야 한다
-
-자동으로 티켓을 만들면 완료된 프로젝트가 계속 열려 정산이 끝나지 않는다.
-그렇다고 무시하면 추가 발주를 놓친다 — 프리랜서에게는 이게 매출이다.
-
-둘 다 손해라서, 한 번 묻는 것이 맞다. 완료 프로젝트에 메시지가 오는 빈도는
-낮으므로 사용자를 자주 괴롭히지도 않는다.
+근거: 하자보수(원래 범위, 프로젝트를 다시 열어야 함)와 추가 발주(새 계약)는
+겉으로 구분되지 않는다. 자동으로 티켓을 만들면 완료 프로젝트가 계속 열려 정산이
+끝나지 않고, 무시하면 추가 발주를 놓친다 — 프리랜서에게는 그게 매출이다.
 
 ---
 
-## 5. LLM 출력 계약
+## 8. LLM 출력 계약
 
-자유 문장이 아니라 JSON만 반환한다.
+자유 문장이 아니라 JSON만 반환한다. 백엔드가 검증하는 것:
 
-```json
-{
-  "outsourcingRelated": true,
-  "projectId": null,
-  "ticketId": null,
-  "suggestedAction": "create_project",
-  "confidence": 0.91,
-  "reason": "신규 홈페이지 제작 견적과 일정 문의",
-  "evidence": [
-    { "sourceId": "event_id", "quote": "홈페이지 제작 견적과 작업 일정을 문의드립니다." }
-  ]
-}
-```
-
-백엔드가 검증하는 것:
-
-- `evidence[].quote`가 실제 입력이나 계약 문서에 **존재하는지** (`core/grounding.py`)
+- `evidence[].quote`가 실제 원문·문서에 **존재하는지**
 - `projectId`·`ticketId`가 백엔드가 준 **후보 목록 안**의 값인지
-- `suggestedAction`이 허용된 7종인지
-- `confidence`가 4.3의 구간 중 어디인지
+- `suggestedAction`이 허용된 값인지
+- `confidence`가 7.1의 어느 구간인지
 
 하나라도 어긋나면 적용하지 않고 `manual_review`로 보낸다.
 
 ---
 
-## 6. 현재 구현과의 차이
+## 9. 현재 구현과의 차이
 
-명세는 목표이고, 아래가 2026-08-26 기준 실제 코드다. 이름이 다른 것과 없는 것을
-구분해 둔다.
-
-### 6.1 이름만 다른 것 (개념 일치)
+### 9.1 이름만 다른 것
 
 | 명세 | 현재 코드 |
 |---|---|
-| `communication_events` | `models/source_message.py` (`SourceMessage`) |
-| `tickets` | `models/client_request.py` (`ClientRequest`) |
-| `ticket.requirementSummary` | `ClientRequest.summaryTitle` |
-| `aiDecision.evidence` | `requestEvidence[]`, `documentEvidence[]` |
-| `attachments` | `models/project_material.py` (`ProjectMaterial`) |
-| `source_connections` | `models/source_link.py` (`ProjectSourceLink`) |
+| `communication_events` | `models/source_message.py` |
+| `tickets` | `models/client_request.py` |
+| `attachments` | `models/project_material.py` |
+| `source_connections` | `models/source_link.py` |
 | `contract_versions` | `models/contract.py` — 버전마다 새 문서 |
 
-### 6.2 아직 없는 것
+### 9.2 고쳐야 하는 것
 
 | 항목 | 현재 | 필요한 일 |
 |---|---|---|
-| `projectStatus = rejected` | `ACTIVE/DRAFT/COMPLETED`만 | enum에 추가 |
-| `projectClassification` | 없음 | `SourceMessage`에 필드 추가 |
-| `aiDecision.suggestedAction` | 없음 | 7종 enum + 스키마 |
-| `confidence` | 없음 | 4.3 구간 판정 |
-| `ticketStatus` 4종 | `responseStatus`(WAITING/COMPLETED) 2종 | 확장 |
-| `project.setup.missingFields` | 없음 | 자동 생성 프로젝트용 |
-| `project.clientEmails[]` | 단수 `clientEmail` | 배열화 |
-| Inbound에서 프로젝트 자동 생성 | 수동 생성만 | 4.1 후보 탐색 + `create_project` |
-| Outbound 판별 | Gmail만 `direction` 계산 | Slack도 필요 |
-| `manual_review` 큐 | 없음 | 4.4 |
+| `ticketStatus` | `WAITING`/`COMPLETED` 2종 | `active`/`done`/`rejected` 3종 |
+| 티켓 매칭 | 없음 (메시지 1건 = 티켓 1건) | 4.1 컨텍스트 매칭 |
+| 프로젝트 후보 판단 | 없음 (source-link가 지정) | 4.2 LLM 선택 |
+| Draft 전환 판단 | 없음 | 5절 |
+| 솔루션 패키지 | 조언·이유·파일 없음 | 6절 |
+| 초안 스타일 | `Tone` Literal 4종 고정 | 6.3 레지스트리 |
+| `projectStatus = rejected` | 없음 | enum 추가 |
+| `projectClassification` | 없음 | 필드 추가 |
+| `manual_review` 큐 | 없음 | 7.2 |
 
-### 6.3 명세보다 앞서 있는 것
+### 9.3 이미 되어 있는 것
 
-- 3색 판정(`aiDecisionStatus`)과 근거 재검증은 이미 동작한다
-- 계약 반영 승인 게이트(`apply_to_contract`)가 이미 유일 경로다
-- S3 첨부 저장(4.6)이 이미 붙어 있다
-- Git 저장소 탐색 서브 에이전트는 명세에 없지만 구현되어 있다
+- 3색 판정과 근거 재검증 (`core/grounding.py`)
+- 계약 반영 승인 게이트 (`apply_to_contract`)
+- S3 첨부 저장, Git 저장소 탐색 서브 에이전트
+- 확인 질문·답변 초안 생성 (스타일은 4종 고정)
 
 ---
 
-## 7. 이행 순서
-
-한 번에 갈아엎지 않는다. 화면이 이미 돌고 있어서다.
+## 10. 이행 순서
 
 ```text
-1단계  SourceMessage에 projectClassification·aiDecision 필드 추가
-       (기존 문서는 null. 읽는 쪽이 없으면 영향 없다)
-
-2단계  sync 파이프라인에 4.1 후보 탐색을 넣는다
-       후보 1개면 코드가 확정, 2개+면 LLM, 실패하면 manual_review
-
-3단계  ClientRequest.responseStatus를 ticketStatus 4종으로 확장
-       WAITING → active, COMPLETED → done 으로 매핑
-
-4단계  projectStatus에 rejected 추가, pendingTransition(4.2) 도입
-
-5단계  manual_review 큐(4.4)와 자동 프로젝트 생성
+1단계  ticketStatus 3종 확장          WAITING→active, COMPLETED→done, rejected 추가
+2단계  티켓 매칭(4.1)을 sync에 넣는다  메시지 1건 = 티켓 1건 고정을 푼다
+3단계  솔루션 패키지(6절)             조언·이유·근거·파일을 한 번에 만들어 저장
+4단계  초안 스타일 레지스트리(6.3)     Literal을 dict로 바꾼다
+5단계  프로젝트 후보 판단(4.2) + Draft 전환(5절)
+6단계  manual_review 큐(7.2), projectClassification
 ```
 
-1~2단계까지가 "채널에서 들어온 메시지가 티켓이 된다"는 흐름을 완성한다.
-3단계부터는 시연 이후로 미뤄도 화면이 깨지지 않는다.
+1~4단계까지가 "티켓을 열면 조언과 초안이 보인다"는 화면을 완성한다.
+5~6단계는 자동 수집이 붙을 때 필요하고, 그 전까지는 source-link가 프로젝트를
+지정하므로 없어도 동작한다.
