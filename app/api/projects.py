@@ -51,7 +51,9 @@ from models.client_request import public_client_request
 from models.integration import IntegrationConnection
 from models.user import User
 
-router = APIRouter(tags=["projects"])
+# 태그는 라우터가 아니라 경로마다 붙인다. 이 파일 하나가 프로젝트·수집·요청·계약
+# 네 묶음을 담고 있어서, 라우터 레벨로 묶으면 Swagger에서 전부 한 덩어리로 보인다.
+router = APIRouter()
 
 
 def _now() -> datetime:
@@ -163,7 +165,7 @@ async def _project_or_404(project_id: PydanticObjectId, user: User | None):
     return project, None
 
 
-@router.post("/projects")
+@router.post("/projects", tags=["project"])
 async def create_project(body: ProjectCreateRequest, current_user: User | None = Depends(get_current_user)):
     if current_user is None:
         return fail("로그인이 필요합니다.", 401)
@@ -177,7 +179,7 @@ async def create_project(body: ProjectCreateRequest, current_user: User | None =
     return ok(public_project(project))
 
 
-@router.get("/projects")
+@router.get("/projects", tags=["project"])
 async def list_projects(
     status: ProjectStatus | None = None,
     sort: ProjectSort = "status",
@@ -201,7 +203,7 @@ async def list_projects(
     ])
 
 
-@router.get("/projects/{project_id}")
+@router.get("/projects/{project_id}", tags=["project"])
 async def project_detail(project_id: PydanticObjectId, current_user: User | None = Depends(get_current_user)):
     project, error = await _project_or_404(project_id, current_user)
     if error:
@@ -209,7 +211,7 @@ async def project_detail(project_id: PydanticObjectId, current_user: User | None
     return ok(public_project(project, await _unanswered_count(project.id, current_user.id)))
 
 
-@router.patch("/projects/{project_id}")
+@router.patch("/projects/{project_id}", tags=["project"])
 async def update_project(
     project_id: PydanticObjectId, body: ProjectUpdateRequest,
     current_user: User | None = Depends(get_current_user),
@@ -229,7 +231,7 @@ async def update_project(
     return ok(public_project(project, await _unanswered_count(project.id, current_user.id)))
 
 
-@router.patch("/projects/{project_id}/status")
+@router.patch("/projects/{project_id}/status", tags=["project"])
 async def update_project_status(
     project_id: PydanticObjectId, body: ProjectStatusRequest,
     current_user: User | None = Depends(get_current_user),
@@ -244,7 +246,7 @@ async def update_project_status(
     return ok(public_project(project, await _unanswered_count(project.id, current_user.id)))
 
 
-@router.get("/projects/{project_id}/requests")
+@router.get("/projects/{project_id}/requests", tags=["request"])
 async def project_requests(project_id: PydanticObjectId, current_user: User | None = Depends(get_current_user)):
     project, error = await _project_or_404(project_id, current_user)
     if error:
@@ -255,7 +257,7 @@ async def project_requests(project_id: PydanticObjectId, current_user: User | No
     return ok([public_client_request(item) for item in requests])
 
 
-@router.get("/requests/{request_id}")
+@router.get("/requests/{request_id}", tags=["request"])
 async def request_detail(request_id: PydanticObjectId, current_user: User | None = Depends(get_current_user)):
     if current_user is None:
         return fail("로그인이 필요합니다.", 401)
@@ -291,7 +293,7 @@ async def _owned_request(request_id: PydanticObjectId, owner_id: PydanticObjectI
     )
 
 
-@router.post("/requests/{request_id}/checklist")
+@router.post("/requests/{request_id}/checklist", tags=["request"])
 async def request_checklist(
     request_id: PydanticObjectId, current_user: User | None = Depends(get_current_user)
 ):
@@ -312,7 +314,7 @@ async def request_checklist(
     return ok({"items": items})
 
 
-@router.post("/requests/{request_id}/reply-draft")
+@router.post("/requests/{request_id}/reply-draft", tags=["request"])
 async def request_reply_draft(
     request_id: PydanticObjectId,
     body: ReplyDraftRequest,
@@ -335,7 +337,7 @@ async def request_reply_draft(
     return ok({"body": reply})
 
 
-@router.patch("/requests/{request_id}/response-status")
+@router.patch("/requests/{request_id}/response-status", tags=["request"])
 async def update_response_status(
     request_id: PydanticObjectId,
     body: ResponseStatusRequest,
@@ -357,7 +359,7 @@ async def update_response_status(
     return ok(public_client_request(item))
 
 
-@router.get("/projects/{project_id}/materials")
+@router.get("/projects/{project_id}/materials", tags=["request"])
 async def project_materials(project_id: PydanticObjectId, current_user: User | None = Depends(get_current_user)):
     project, error = await _project_or_404(project_id, current_user)
     if error:
@@ -368,7 +370,7 @@ async def project_materials(project_id: PydanticObjectId, current_user: User | N
     return ok([public_material(item) for item in materials])
 
 
-@router.get("/projects/{project_id}/source-links")
+@router.get("/projects/{project_id}/source-links", tags=["ingest"])
 async def source_links(project_id: PydanticObjectId, current_user: User | None = Depends(get_current_user)):
     project, error = await _project_or_404(project_id, current_user)
     if error:
@@ -379,7 +381,7 @@ async def source_links(project_id: PydanticObjectId, current_user: User | None =
     return ok([item.model_dump(mode="json", exclude={"id", "ownerId"}) | {"sourceLinkId": str(item.id)} for item in links])
 
 
-@router.post("/projects/{project_id}/source-links")
+@router.post("/projects/{project_id}/source-links", tags=["ingest"])
 async def create_source_link(
     project_id: PydanticObjectId, body: SourceLinkRequest,
     current_user: User | None = Depends(get_current_user),
@@ -688,7 +690,7 @@ async def _store_material_original(material: ProjectMaterial, connection_id: str
     await material.save()
 
 
-@router.post("/projects/{project_id}/git/ask")
+@router.post("/projects/{project_id}/git/ask", tags=["ingest"])
 async def ask_git_repository(
     project_id: PydanticObjectId, body: GitAskRequest,
     current_user: User | None = Depends(get_current_user),
@@ -712,7 +714,7 @@ async def ask_git_repository(
     return ok({"answer": answer, "repoFullName": link.repoFullName})
 
 
-@router.post("/projects/{project_id}/source-links/{source_link_id}/sync")
+@router.post("/projects/{project_id}/source-links/{source_link_id}/sync", tags=["ingest"])
 async def sync_source_link(
     project_id: PydanticObjectId, source_link_id: PydanticObjectId,
     background_tasks: BackgroundTasks,
@@ -809,7 +811,7 @@ async def sync_source_link(
     return ok({"sourceMessageCount": new_count, "newMessageCount": new_count, "analysisRunIds": run_ids})
 
 
-@router.get("/analysis-runs/{analysis_run_id}")
+@router.get("/analysis-runs/{analysis_run_id}", tags=["ingest"])
 async def analysis_run(analysis_run_id: PydanticObjectId, current_user: User | None = Depends(get_current_user)):
     if current_user is None:
         return fail("로그인이 필요합니다.", 401)
@@ -819,7 +821,7 @@ async def analysis_run(analysis_run_id: PydanticObjectId, current_user: User | N
     return ok(run.model_dump(mode="json", exclude={"id", "ownerId"}) | {"analysisRunId": str(run.id)})
 
 
-@router.get("/projects/{project_id}/requirements")
+@router.get("/projects/{project_id}/requirements", tags=["agreement"])
 async def project_requirements(project_id: PydanticObjectId, current_user: User | None = Depends(get_current_user)):
     project, error = await _project_or_404(project_id, current_user)
     if error:
@@ -829,7 +831,7 @@ async def project_requirements(project_id: PydanticObjectId, current_user: User 
     return ok([public_requirement(item) for item in requirements])
 
 
-@router.get("/projects/{project_id}/contract")
+@router.get("/projects/{project_id}/contract", tags=["agreement"])
 async def project_contract(project_id: PydanticObjectId, current_user: User | None = Depends(get_current_user)):
     project, error = await _project_or_404(project_id, current_user)
     if error:
@@ -841,7 +843,7 @@ async def project_contract(project_id: PydanticObjectId, current_user: User | No
     return ok(public_contract(contract))
 
 
-@router.post("/projects/{project_id}/contract")
+@router.post("/projects/{project_id}/contract", tags=["agreement"])
 async def create_project_contract(project_id: PydanticObjectId, body: ContractState, current_user: User | None = Depends(get_current_user)):
     project, error = await _project_or_404(project_id, current_user)
     if error:
@@ -856,7 +858,7 @@ async def create_project_contract(project_id: PydanticObjectId, body: ContractSt
     return ok(__import__("app.public_data", fromlist=["public_contract"]).public_contract(contract))
 
 
-@router.post("/projects/{project_id}/contract/apply")
+@router.post("/projects/{project_id}/contract/apply", tags=["agreement"])
 async def apply_project_contract(project_id: PydanticObjectId, body: ContractApplyRequest, current_user: User | None = Depends(get_current_user)):
     project, error = await _project_or_404(project_id, current_user)
     if error:
@@ -905,7 +907,7 @@ async def _requirement_text(project: Project, requirement: Requirement, owner_id
     )
 
 
-@router.post("/projects/{project_id}/requirements/{requirement_id}/questions")
+@router.post("/projects/{project_id}/requirements/{requirement_id}/questions", tags=["agreement"])
 async def requirement_questions(
     project_id: PydanticObjectId, requirement_id: PydanticObjectId,
     current_user: User | None = Depends(get_current_user),
@@ -926,7 +928,7 @@ async def requirement_questions(
     return ok({"questions": questions})
 
 
-@router.post("/projects/{project_id}/requirements/{requirement_id}/reply")
+@router.post("/projects/{project_id}/requirements/{requirement_id}/reply", tags=["agreement"])
 async def requirement_reply(
     project_id: PydanticObjectId, requirement_id: PydanticObjectId, body: ReplyDraftRequest,
     current_user: User | None = Depends(get_current_user),
@@ -951,7 +953,7 @@ async def requirement_reply(
     return ok({"draft": draft})
 
 
-@router.get("/projects/{project_id}/requirements/{requirement_id}/allowed")
+@router.get("/projects/{project_id}/requirements/{requirement_id}/allowed", tags=["agreement"])
 async def allowed_project_requirement(
     project_id: PydanticObjectId, requirement_id: PydanticObjectId,
     current_user: User | None = Depends(get_current_user),
@@ -967,7 +969,7 @@ async def allowed_project_requirement(
     return ok({"allowed": list(TRANSITIONS[requirement.status])})
 
 
-@router.post("/projects/{project_id}/requirements/{requirement_id}/transition")
+@router.post("/projects/{project_id}/requirements/{requirement_id}/transition", tags=["agreement"])
 async def transition_project_requirement(
     project_id: PydanticObjectId, requirement_id: PydanticObjectId, body: RequirementTransitionRequest,
     current_user: User | None = Depends(get_current_user),

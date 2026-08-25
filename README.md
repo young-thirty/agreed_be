@@ -65,4 +65,5 @@ http://localhost:8000/api/slack/callback
 | [DATA_AI_PIPELINE.md](./DATA_AI_PIPELINE.md) | 프로젝트·수집·AI·근거 설계 |
 | [AI_AGENTS.md](./AI_AGENTS.md) | 에이전트 구조·하네스·도구 |
 | [USER_FLOW.md](./USER_FLOW.md) | 화면별 흐름·설계 근거·미연결 구간 |
+| [DOMAIN_SPEC.md](./DOMAIN_SPEC.md) | 프로젝트·티켓·이벤트 도메인과 정책 설계안 |
 | [PRODUCT_API_DESIGN.md](./PRODUCT_API_DESIGN.md) | UNI 화면별 DTO·API·구현 순서 |
