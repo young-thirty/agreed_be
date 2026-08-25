@@ -82,7 +82,14 @@ async def _llm_json(messages: list[dict[str, str]], schema_type: type[BaseModel]
     raise last_error
 
 
-class ProjectCreateRequest(BaseModel):
+class ProjectUpdateRequest(BaseModel):
+    """사람이 화면에서 고칠 수 있는 값. 폼이 늘 전부 보내므로 부분 갱신은 받지 않는다.
+
+    status는 여기에 없다. 진행 상태는 /status가 따로 맡는다. 수정 폼이
+    status를 함께 보내면 안 보낸 경우와 구분하지 못해 진행 중인 프로젝트가
+    조용히 Draft로 되돌아갈 수 있다.
+    """
+
     name: str = Field(min_length=1, max_length=120)
     clientName: str = Field(min_length=1, max_length=120)
     clientEmail: str | None = Field(
@@ -94,6 +101,9 @@ class ProjectCreateRequest(BaseModel):
     startDate: date | None = None
     endDate: date | None = None
     contractPrice: int | None = Field(default=None, ge=0)
+
+
+class ProjectCreateRequest(ProjectUpdateRequest):
     status: ProjectStatus = "DRAFT"
 
 
@@ -193,6 +203,26 @@ async def project_detail(project_id: PydanticObjectId, current_user: User | None
     project, error = await _project_or_404(project_id, current_user)
     if error:
         return error
+    return ok(public_project(project, await _unanswered_count(project.id, current_user.id)))
+
+
+@router.patch("/projects/{project_id}")
+async def update_project(
+    project_id: PydanticObjectId, body: ProjectUpdateRequest,
+    current_user: User | None = Depends(get_current_user),
+):
+    project, error = await _project_or_404(project_id, current_user)
+    if error:
+        return error
+    project.name = body.name
+    project.clientName = body.clientName
+    project.clientEmail = body.clientEmail
+    project.description = body.description
+    project.startDate = body.startDate
+    project.endDate = body.endDate
+    project.contractPrice = body.contractPrice
+    project.updatedAt = _now()
+    await project.save()
     return ok(public_project(project, await _unanswered_count(project.id, current_user.id)))
 
 
