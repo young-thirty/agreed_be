@@ -35,3 +35,13 @@ def ground_evidence(
     빈 리스트가 되고, 호출부가 그 항목 전체를 버릴지 판단한다.
     """
     return [e for e in evidence if is_grounded(utterances, e)]
+
+
+def is_quote_in(text: str, quote: str) -> bool:
+    """인용문이 문서 원문에 실제로 존재하는지 확인한다.
+
+    is_grounded가 발화(Utterance)를 대상으로 하는 것과 같은 규칙을 계약 조항·자료
+    본문에 적용한다. 모델이 계약서 문구를 옮기며 공백을 바꾸는 일이 잦아서
+    정규화 후 비교한다. 빈 인용은 근거로 치지 않는다.
+    """
+    return bool(quote.strip()) and normalize(quote) in normalize(text)

@@ -5,7 +5,6 @@ BackgroundTasks로 분석한다. 프론트는 provider API를 직접 호출하�
 """
 
 import hashlib
-import json
 import os
 from datetime import date, datetime, timezone
 from typing import Literal
@@ -18,11 +17,12 @@ from pymongo.errors import DuplicateKeyError
 from app.auth import get_current_user
 from app.integration_store import access_token, latest_gmail_connection, slack_connection
 from app.public_data import public_material, public_project
+from app.requirement_sync import sync_requirements_from_requests
 from app.response import fail, ok
 from core.contract_ops import apply_to_contract, diff_contract
 from core.domain import ContractState, Decision, RequirementStatus
 from core.project_data import (
-    AiDecisionStatus, DocumentType, ProcessingStatus, ProjectSort, ProjectStatus,
+    DocumentType, ProcessingStatus, ProjectSort, ProjectStatus,
     ResponseStatus, SourceChannel,
 )
 from infra.integrations import IntegrationError
@@ -30,9 +30,13 @@ from infra.integrations.gmail import (
     GMAIL_SCOPES, fetch_recent, refresh_access_token,
 )
 from infra.integrations.slack import fetch_history
-from infra.llm.client import EXTRACT_MODEL, get_client, has_api_key
-from infra.llm.prompts import PROJECT_ANALYSIS_SYSTEM_PROMPT, PROJECT_MATERIAL_SYSTEM_PROMPT
-from infra.llm.schemas import MaterialClassificationResult, RequestAnalysisResult
+from infra.llm.client import EXTRACT_MODEL
+from infra.llm.harness import run_json
+from infra.llm.orchestrator import AnalyzedRequest, analyze_request_message
+from infra.llm.subagents.checklist import build_checklist
+from infra.llm.subagents.reply_draft import build_reply_draft
+from infra.llm.prompts import PROJECT_MATERIAL_SYSTEM_PROMPT
+from infra.llm.schemas import MaterialClassificationResult
 from infra.security.provider_tokens import TokenEncryptionError
 from models import (
     AnalysisRun, ClientRequest, Contract, Project, ProjectMaterial,
@@ -62,21 +66,6 @@ def _hash(value: str) -> str:
 
 def _status_rank(status: ProjectStatus) -> int:
     return {"ACTIVE": 0, "DRAFT": 1, "COMPLETED": 2}[status]
-
-
-async def _llm_json(messages: list[dict[str, str]], schema_type: type[BaseModel]):
-    """JSON/Pydantic 검증 실패는 한 번만 재시도한다."""
-    last_error: Exception | None = None
-    for _ in range(2):
-        try:
-            response = await get_client().chat.completions.create(
-                model=EXTRACT_MODEL, response_format={"type": "json_object"}, messages=messages
-            )
-            return schema_type.model_validate(json.loads(response.choices[0].message.content or "{}"))
-        except Exception as error:
-            last_error = error
-    assert last_error is not None
-    raise last_error
 
 
 class ProjectCreateRequest(BaseModel):
@@ -218,10 +207,94 @@ async def request_detail(request_id: PydanticObjectId, current_user: User | None
     data.update({
         "requestEvidence": [e.model_dump(mode="json") for e in item.requestEvidence],
         "documentEvidence": [e.model_dump(mode="json") for e in item.documentEvidence],
+        # decisionReason은 PRODUCT_API_DESIGN.md의 확정 공개 DTO에는 없지만,
+        # 이 endpoint 자체가 이미 그 DTO를 넘어선 상세 화면용이라 함께 둔다.
+        "decisionReason": item.decisionReason,
         "sourceText": message.rawText if message else None,
         "conversationDisplay": message.conversationDisplay if message else None,
     })
     return ok(data)
+
+
+class ReplyDraftRequest(BaseModel):
+    selectedItems: list[str] = Field(default_factory=list, max_length=6)
+    tone: Literal["friendly", "professional", "concise", "firm"] = "professional"
+
+
+class ResponseStatusRequest(BaseModel):
+    responseStatus: ResponseStatus
+
+
+async def _owned_request(request_id: PydanticObjectId, owner_id: PydanticObjectId) -> ClientRequest | None:
+    return await ClientRequest.find_one(
+        ClientRequest.id == request_id, ClientRequest.ownerId == owner_id
+    )
+
+
+@router.post("/requests/{request_id}/checklist")
+async def request_checklist(
+    request_id: PydanticObjectId, current_user: User | None = Depends(get_current_user)
+):
+    """답변 전에 확인할 항목을 만든다. DATA_AI_PIPELINE.md §5 6단계.
+
+    매 sync마다 만들지 않고, 사람이 카드를 열어 실제로 필요할 때만 호출한다.
+    """
+    if current_user is None:
+        return fail("로그인이 필요합니다.", 401)
+    item = await _owned_request(request_id, current_user.id)
+    if item is None:
+        return fail("요청을 찾을 수 없습니다.", 404)
+    items = await build_checklist(
+        summary_title=item.summaryTitle or "",
+        reason=item.decisionReason or "",
+        request_quote=item.requestEvidence[0].quote if item.requestEvidence else "",
+    )
+    return ok({"items": items})
+
+
+@router.post("/requests/{request_id}/reply-draft")
+async def request_reply_draft(
+    request_id: PydanticObjectId,
+    body: ReplyDraftRequest,
+    current_user: User | None = Depends(get_current_user),
+):
+    """고객에게 보낼 답변 초안을 만든다. DATA_AI_PIPELINE.md §5 7단계.
+
+    사람이 체크리스트에서 고른 항목만 반영한다. 생성만 하고 발송하지 않는다 —
+    발송 endpoint는 아직 없다(HANDOFF.md 보류 목록).
+    """
+    if current_user is None:
+        return fail("로그인이 필요합니다.", 401)
+    item = await _owned_request(request_id, current_user.id)
+    if item is None:
+        return fail("요청을 찾을 수 없습니다.", 404)
+    selected = [text.strip() for text in body.selectedItems if text.strip()][:6]
+    reply = await build_reply_draft(
+        summary_title=item.summaryTitle or "", selected_items=selected, tone=body.tone
+    )
+    return ok({"body": reply})
+
+
+@router.patch("/requests/{request_id}/response-status")
+async def update_response_status(
+    request_id: PydanticObjectId,
+    body: ResponseStatusRequest,
+    current_user: User | None = Depends(get_current_user),
+):
+    """사람이 대응 상태를 바꾼다. AI는 관여하지 않는다.
+
+    WAITING에서 나갈 경로가 없어 unansweredRequestCount가 줄어들 방법이
+    없었다. 이 경로가 그 유일한 출구다.
+    """
+    if current_user is None:
+        return fail("로그인이 필요합니다.", 401)
+    item = await _owned_request(request_id, current_user.id)
+    if item is None:
+        return fail("요청을 찾을 수 없습니다.", 404)
+    item.responseStatus = body.responseStatus
+    item.updatedAt = _now()
+    await item.save()
+    return ok(public_client_request(item))
 
 
 @router.get("/projects/{project_id}/materials")
@@ -327,24 +400,33 @@ async def _upsert_source_message(link: ProjectSourceLink, connection_id: str, *,
         raise
 
 
+# CLIENT_REQUEST 판정을 오케스트레이터(요청 다건 추출 + 계약 대조 서브 에이전트)로
+# 바꾸면서 올린다. AnalysisRun의 unique key가 (ownerId,targetType,inputHash,
+# promptVersion)이라, 버전을 그대로 두면 이전 단발 판정 결과가 캐시로 재사용되어
+# 새 파이프라인이 아예 안 돈다. MATERIAL_CLASSIFICATION은 로직이 그대로라 "v1"을
+# 유지한다.
+CLIENT_REQUEST_PROMPT_VERSION = "v2-orchestrator"
+
+
 async def _ensure_run(message: SourceMessage) -> AnalysisRun:
     input_hash = _hash(message.contentHash + message.sourceKey)
     existing = await AnalysisRun.find_one(
         AnalysisRun.ownerId == message.ownerId, AnalysisRun.targetType == "CLIENT_REQUEST",
-        AnalysisRun.inputHash == input_hash, AnalysisRun.promptVersion == "v1",
+        AnalysisRun.inputHash == input_hash, AnalysisRun.promptVersion == CLIENT_REQUEST_PROMPT_VERSION,
     )
     if existing:
         return existing
     run = AnalysisRun(
         ownerId=message.ownerId, projectId=message.projectId, targetType="CLIENT_REQUEST",
         sourceMessageId=message.id, status="PENDING", inputHash=input_hash, model=EXTRACT_MODEL,
+        promptVersion=CLIENT_REQUEST_PROMPT_VERSION,
     )
     try:
         await run.insert()
     except DuplicateKeyError:
         existing = await AnalysisRun.find_one(
             AnalysisRun.ownerId == message.ownerId, AnalysisRun.targetType == "CLIENT_REQUEST",
-            AnalysisRun.inputHash == input_hash, AnalysisRun.promptVersion == "v1",
+            AnalysisRun.inputHash == input_hash, AnalysisRun.promptVersion == CLIENT_REQUEST_PROMPT_VERSION,
         )
         if existing:
             return existing
@@ -375,7 +457,71 @@ async def _ensure_material_run(material: ProjectMaterial) -> AnalysisRun:
     return run
 
 
+async def _save_client_requests(
+    message: SourceMessage, run: AnalysisRun, analyzed: list[AnalyzedRequest]
+) -> None:
+    """요청 N건을 ordinal 순서로 upsert한다.
+
+    responseStatus는 건드리지 않는다. 사람이 대응 완료로 바꿔둔 카드가 재분석
+    때문에 다시 대기로 돌아가면 안 된다.
+    """
+    for ordinal, item in enumerate(analyzed):
+        values = dict(
+            analysisRunId=run.id,
+            sourceChannel=message.sourceChannel,
+            senderDisplay=message.senderDisplay,
+            occurredAt=message.occurredAt,
+            aiProcessingStatus="COMPLETED",
+            summaryTitle=item.summaryTitle,
+            aiDecisionStatus=item.decision,
+            decisionReason=item.reason or None,
+            requestEvidence=(
+                [{"quote": item.requestQuote, "sourceMessageId": str(message.id)}]
+                if item.requestQuote
+                else []
+            ),
+            documentEvidence=(
+                [{"quote": item.documentQuote, "documentId": item.documentId}]
+                if item.documentQuote and item.documentId
+                else []
+            ),
+            updatedAt=_now(),
+        )
+        existing = await ClientRequest.find_one(
+            ClientRequest.ownerId == message.ownerId,
+            ClientRequest.sourceMessageId == message.id,
+            ClientRequest.requestOrdinal == ordinal,
+        )
+        if existing:
+            for key, value in values.items():
+                setattr(existing, key, value)
+            await existing.save()
+        else:
+            await ClientRequest(
+                ownerId=message.ownerId,
+                projectId=message.projectId,
+                sourceMessageId=message.id,
+                requestOrdinal=ordinal,
+                **values,
+            ).insert()
+
+    # 재분석에서 요청 수가 줄면 앞선 분석이 남긴 카드를 지운다. 그대로 두면
+    # 원문에 없는 요청이 화면에 계속 남는다.
+    stale = await ClientRequest.find(
+        ClientRequest.ownerId == message.ownerId,
+        ClientRequest.sourceMessageId == message.id,
+        ClientRequest.requestOrdinal >= len(analyzed),
+    ).to_list()
+    for item in stale:
+        await item.delete()
+
+
 async def analyze_source_run(run_id: str):
+    """원문 한 건을 분석해 ClientRequest로 남긴다. BackgroundTasks가 부른다.
+
+    판단은 infra/llm/orchestrator.py가 하고 여기서는 저장만 한다. 라우트 파일이
+    LLM을 직접 부르지 않는다.
+    """
     run = await AnalysisRun.get(PydanticObjectId(run_id))
     if run is None or run.sourceMessageId is None:
         return
@@ -385,61 +531,34 @@ async def analyze_source_run(run_id: str):
     run.status, run.startedAt, run.updatedAt = "PROCESSING", _now(), _now()
     await run.save()
     try:
-        title = None
-        decision: AiDecisionStatus | None = None
-        quote = ""
-        if has_api_key() and message.rawText.strip():
-            payload = await _llm_json(
-                [
-                    {"role": "system", "content": PROJECT_ANALYSIS_SYSTEM_PROMPT},
-                    {"role": "user", "content": message.rawText[:12000]},
-                ],
-                RequestAnalysisResult,
-            )
-            title, decision, quote = payload.summaryTitle, payload.decision, payload.quote
-        if not title:
-            first_line = next((line.strip() for line in message.rawText.splitlines() if line.strip()), "새 클라이언트 요청")
-            title = first_line[:80]
-            quote = first_line[:200]
-            decision = "OUT_OF_SCOPE_COORDINATION_REQUIRED"
-        if quote not in message.rawText:
-            quote = ""
-            decision = "OUT_OF_SCOPE_COORDINATION_REQUIRED"
-        document_evidence: list[dict[str, str]] = []
-        contract = await Contract.find(
-            Contract.ownerId == message.ownerId, Contract.projectId == message.projectId
-        ).sort(-Contract.version).first_or_none()
-        if contract is not None:
-            matched_scope = next((scope for scope in contract.scope if scope and scope in message.rawText), None)
-            if matched_scope:
-                # 계약 문구가 실제 원문에 있으면 초록으로 올리고, 근거 문장도 함께 저장한다.
-                decision = "IN_SCOPE_ACTION_REQUIRED"
-                document_evidence = [{"quote": matched_scope, "documentId": str(contract.id)}]
-            elif decision == "IN_SCOPE_ACTION_REQUIRED":
-                decision = "OUT_OF_SCOPE_COORDINATION_REQUIRED"
-        existing = await ClientRequest.find_one(
-            ClientRequest.ownerId == message.ownerId, ClientRequest.sourceMessageId == message.id,
-            ClientRequest.requestOrdinal == 0,
+        analyzed = await analyze_request_message(
+            owner_id=message.ownerId,
+            project_id=message.projectId,
+            raw_text=message.rawText,
         )
-        values = dict(ownerId=message.ownerId, projectId=message.projectId, sourceMessageId=message.id,
-                      analysisRunId=run.id, requestOrdinal=0, sourceChannel=message.sourceChannel,
-                      senderDisplay=message.senderDisplay, occurredAt=message.occurredAt,
-                      aiProcessingStatus="COMPLETED", summaryTitle=title, aiDecisionStatus=decision,
-                      requestEvidence=[] if not quote else [{"quote": quote, "sourceMessageId": str(message.id)}],
-                      documentEvidence=document_evidence,
-                      updatedAt=_now())
-        if existing:
-            for key, value in values.items():
-                if key not in {"ownerId", "projectId", "sourceMessageId", "requestOrdinal"}:
-                    setattr(existing, key, value)
-            await existing.save()
-        else:
-            await ClientRequest(**values).insert()
+        await _save_client_requests(message, run, analyzed)
+        await sync_requirements_from_requests(
+            owner_id=message.ownerId, project_id=message.projectId
+        )
         run.status, run.completedAt, run.updatedAt = "COMPLETED", _now(), _now()
         await run.save()
     except Exception:
         run.status, run.errorCode, run.completedAt, run.updatedAt = "FAILED", "ANALYSIS_FAILED", _now(), _now()
         await run.save()
+
+
+def _document_type_from_name(file_name: str) -> DocumentType:
+    """파일명으로 문서 종류를 정한다. 모델을 못 쓸 때의 폴백이다."""
+    name = file_name.lower()
+    if "계약" in name or "contract" in name:
+        return "CONTRACT"
+    if "제안" in name or "proposal" in name:
+        return "PROPOSAL"
+    if "요구" in name or "requirement" in name:
+        return "REQUIREMENTS"
+    if "회의" in name or "meeting" in name:
+        return "MEETING_NOTES"
+    return "OTHER"
 
 
 async def classify_material_run(run_id: str):
@@ -455,28 +574,18 @@ async def classify_material_run(run_id: str):
     run.status, run.startedAt, run.updatedAt = "PROCESSING", _now(), _now()
     await run.save()
     try:
-        name = material.fileName.lower()
-        kind: DocumentType
-        if has_api_key() and material.extractedText:
-            kind = (
-                await _llm_json(
-                    [
-                        {"role": "system", "content": PROJECT_MATERIAL_SYSTEM_PROMPT},
-                        {"role": "user", "content": f"파일명: {material.fileName}\n텍스트: {material.extractedText[:8000]}"},
-                    ],
-                    MaterialClassificationResult,
-                )
-            ).documentType
-        elif "계약" in name or "contract" in name:
-            kind = "CONTRACT"
-        elif "제안" in name or "proposal" in name:
-            kind = "PROPOSAL"
-        elif "요구" in name or "requirement" in name:
-            kind = "REQUIREMENTS"
-        elif "회의" in name or "meeting" in name:
-            kind = "MEETING_NOTES"
-        else:
-            kind = "OTHER"
+        kind: DocumentType | None = None
+        if material.extractedText:
+            classified = await run_json(
+                system_prompt=PROJECT_MATERIAL_SYSTEM_PROMPT,
+                user_content=f"파일명: {material.fileName}\n텍스트: {material.extractedText[:8000]}",
+                schema=MaterialClassificationResult,
+            )
+            kind = classified.documentType if classified else None
+        # 추출된 텍스트가 없거나 모델이 답하지 못하면 파일명으로 정한다.
+        # 분류 자체를 실패로 두면 자료 탭이 비어 보인다.
+        if kind is None:
+            kind = _document_type_from_name(material.fileName)
         material.documentType, material.classificationStatus, material.updatedAt = kind, "COMPLETED", _now()
         await material.save()
         run.status, run.completedAt, run.updatedAt = "COMPLETED", _now(), _now()

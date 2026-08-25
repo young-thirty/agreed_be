@@ -26,7 +26,10 @@
 | UNI-20 목록 | `GET /api/projects?status=&sort=` | `ProjectSummary[]` |
 | UNI-21 상단 | `GET /api/projects/{projectId}` | `ProjectSummary` |
 | 요청 탭 | `GET /api/projects/{projectId}/requests` | `ClientRequestSummary[]` |
-| 요청 단건 | `GET /api/requests/{requestId}` | 동일 DTO |
+| 요청 단건 | `GET /api/requests/{requestId}` | 동일 DTO + 원문·근거 |
+| 답변 전 확인 항목 | `POST /api/requests/{requestId}/checklist` | `{ items: string[] }` |
+| 답변 초안 생성 | `POST /api/requests/{requestId}/reply-draft` | `{ body: string }` |
+| 대응 상태 변경 | `PATCH /api/requests/{requestId}/response-status` | 동일 DTO |
 | 자료 탭 | `GET /api/projects/{projectId}/materials` | `ProjectMaterialSummary[]` |
 
 정렬은 `status`(기본: ACTIVE→DRAFT→COMPLETED, 동률 updatedAt 내림차순),
@@ -173,17 +176,34 @@ Mongo에 저장된 결과만 읽는다. FE가 provider 원문 배열을 재전�
 시연에는 Redis/Celery/Kafka를 넣지 않는다. provider 조회·upsert 후 AI만 FastAPI
 `BackgroundTasks`로 실행하고 sync는 신규 메시지 수와 run ID를 즉시 반환한다.
 
-ClientRequest 파이프라인:
+ClientRequest 파이프라인(`infra/llm/orchestrator.py`):
 
 1. run을 PROCESSING으로 바꾸고 서명/이전 인용/Slack 시스템 문장을 정규화한다.
-2. 요청을 0개 이상 추출하고 80자 이하 summary, 세 판정, 원문 인용을 JSON으로 받는다.
-3. 현재 프로젝트 계약/자료에서 문서 근거 후보와 인용을 받는다.
-4. Pydantic enum/길이와 실제 substring을 검증한 근거만 저장한다.
-5. ClientRequest를 upsert한다. 성공은 COMPLETED, 예외는 FAILED다.
+2. 요청을 0~5개 추출한다. 원문 한 건에 요청이 여럿이면 각각 `requestOrdinal`을
+   달리해 별도 ClientRequest로 저장한다(이전에는 원문 1건=요청 1건 고정이었다).
+3. 요청마다 계약 대조 서브 에이전트(`infra/llm/subagents/contract_match.py`)에
+   위임한다. `read_contract`/`search_materials` 도구로 현재 계약과 프로젝트 자료를
+   직접 찾아보고 판정한다. 여러 요청의 대조는 병렬로 돌린다.
+4. Pydantic enum/길이와 실제 substring(`core/grounding.py:is_quote_in`)을 검증한
+   근거만 저장한다. 도구가 보여준 적 없는 문서를 근거로 대면 버린다.
+5. ClientRequest를 requestOrdinal별로 upsert한다. 재분석으로 요청 수가 줄면 남는
+   ordinal은 삭제한다. 성공은 COMPLETED, 예외는 FAILED다.
+6. `EXTRA_REQUEST`(빨강) 판정은 `app/requirement_sync.py`가 프로젝트의
+   `Requirement`(9상태, 초기 상태 '요청')로 하나씩 연결한다. `sourceRequestId`가
+   멱등 키다. 이 연결은 코드가 하고 AI는 관여하지 않는다.
 
 직접 계약 근거가 있으면 초록, 애매/근거 부족이면 주황, 명시적 새 산출물·범위 추가가
 문서로 확인될 때만 빨강이다. 허구 인용을 버린 뒤 근거가 없으면 주황으로 낮춘다.
 AI는 합의, response 완료, contract apply를 하지 않는다.
+
+체크리스트·답변 초안은 sync 때 함께 만들지 않고 사람이 요청 카드를 열 때
+on-demand로 만든다.
+
+```text
+POST /api/requests/{requestId}/checklist     사람이 확인할 항목 3~5개
+POST /api/requests/{requestId}/reply-draft   선택한 항목만 반영한 답변 초안(발송 안 함)
+PATCH /api/requests/{requestId}/response-status   WAITING ↔ COMPLETED. AI는 관여하지 않는다
+```
 
 자료는 파일명+추출 텍스트로 5종 중 하나를 구조화 분류한다. 정상 분류의 그 외 문서는
 OTHER, 파일/모델 작업 실패만 FAILED/null이다. DeepSeek은 기존 8초 timeout, SDK retry 0,
@@ -200,12 +220,16 @@ integrations/analysis/contracts로 나눈다. 세션 dependency는
 완료: phoneNumber+정확한 사용자 DTO, Swagger 전역 응답·인증·OAuth 문서화.
 완료: 프로젝트·요청·자료 모델/조회 API, source-link 등록·sync, 분석 실행 조회,
 프로젝트별 계약·요구사항 경로, 시연 seed 스크립트.
+완료: 요청 다건 추출(1건→N건), 계약 대조 서브 에이전트(substring 매칭 대체),
+`EXTRA_REQUEST`→`Requirement` 합의 흐름 연결, 체크리스트·답변 초안 생성 API,
+대응 상태(`responseStatus`) 변경 API. 상세는 DATA_AI_PIPELINE.md 5-a절.
 
 P0/P1 구현: Project/Request/Material 모델 → 목록·상세 API → unanswered/소유권 →
 Contract/Requirement projectId → 시연 seed → Gmail 상대 1개·Slack channel 1개 sync
-→ DeepSeek 요청 분석·자료 분류.
+→ DeepSeek 요청 분석·자료 분류. (완료)
 
 보류: Slack Events/Gmail history/watch, worker queue, pagination/검색/실시간 전송, 범용
-첨부·S3/OCR, 수동 업로드 처리, 요청 근거 상세 DTO, 체크리스트·답장 생성/발송,
-대응 상태 변경 API, 감사·보관 정책, REJECTED 상태. 기존 ContractDiff와 합의 후 apply는
-project 범위로 유지한다.
+첨부·S3/OCR(Gmail 첨부는 아직 attachmentRefs가 비어 있음), 수동 업로드 처리,
+요청 근거 상세 DTO의 공식 확정(현재 `GET /api/requests/{id}`가 비공식으로 내려줌),
+답장 실제 발송(초안 생성까지만), 감사 로그, REJECTED 상태. 기존 ContractDiff와
+합의 후 apply는 project 범위로 유지한다.

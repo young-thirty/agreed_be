@@ -90,12 +90,17 @@ GET /api/projects/{projectId}/requests
 각 단계는 Pydantic 구조화 출력과 고정된 입력·출력을 갖는다.
 
 1. **정규화** — 서명, 이전 답장 인용, Slack 시스템 이벤트를 분리하고 발화 ID를 붙인다.
-2. **요청 추출** — 원문에서 클라이언트의 요청 문장과 짧은 요약만 찾는다.
-3. **계약 대조** — 현재 `ContractVersion`과 프로젝트 문서에서 관련 조항 후보를 찾는다.
+2. **요청 추출** — 원문에서 클라이언트의 요청을 0건 이상 찾는다. 한 건에 요청이 여러
+   개면 각각을 따로 뽑는다(`infra/llm/orchestrator.py`).
+3. **계약 대조** — 요청마다 현재 `Contract`와 프로젝트 `ProjectMaterial`에서 관련 조항을
+   찾는다. 계약 문구를 그대로 대는 substring 매칭이 아니라, 도구를 쥔 서브 에이전트가
+   필요하면 자료를 더 찾아보며 판단한다(`infra/llm/subagents/contract_match.py`, 5-a절).
 4. **판정** — 아래 세 값 중 하나와 짧은 이유·근거 ID만 생성한다.
 5. **근거 검증** — 코드가 인용문이 실제 원문/문서에 존재하는지 다시 확인한다.
-6. **체크리스트** — 사람이 답변 전에 확인할 범위·납기·비용·질문 항목을 만든다.
-7. **답변 초안** — 사용자가 선택·수정한 체크리스트만 입력으로 받아 생성한다.
+6. **체크리스트** — 사람이 답변 전에 확인할 범위·납기·비용·질문 항목을 만든다
+   (`POST /api/requests/{id}/checklist`).
+7. **답변 초안** — 사용자가 선택·수정한 체크리스트만 입력으로 받아 생성한다
+   (`POST /api/requests/{id}/reply-draft`). 생성만 하고 발송하지 않는다.
 
 요청 카드의 색 판정(`AiDecisionStatus`)과 합의 진행 상태(`RequirementStatus`)는 다른
 값이다. 초록 카드가 곧 합의 상태라는 뜻이 아니다.
@@ -107,6 +112,57 @@ GET /api/projects/{projectId}/requests
 | `EXTRA_REQUEST` | 빨강 | 새 산출물·명시적 범위 추가·납기/비용 변경처럼 계약 밖 변경 근거가 분명함 |
 
 근거가 부족하거나 서로 충돌하면 초록·빨강을 억지로 고르지 않고 주황으로 내린다.
+
+`EXTRA_REQUEST`(빨강) 판정을 받은 요청은 `app/requirement_sync.py`가 프로젝트의
+`Requirement`(9상태)로 하나씩 만든다. 이 연결은 AI가 하지 않는다. "계약 밖 변경
+근거가 분명한 요청은 사람이 판단할 요구사항이 된다"는 규칙이지 추론이 아니기
+때문이다(6.1절). `Requirement.sourceRequestId`가 멱등 키라 재분석해도 중복 생성되지
+않고, 사람이 이미 진행시킨 카드를 되돌리지도 않는다.
+
+## 5-a. 에이전트 하네스 — 오케스트레이터와 서브 에이전트
+
+3단계(계약 대조)처럼 "필요하면 자료를 더 찾아본다"는 판단은 JSON mode 단발 호출로는
+못 만든다. 도구 호출 자체가 안 되기 때문이다. 그래서 이 단계만 function calling
+기반의 서브 에이전트로 만들고, 나머지 단발 추출(2·6·7단계)은 기존 JSON mode 규약을
+그대로 유지한다. 유어슈(Yourssu)의 사내 봇 [shookie](https://github.com/yourssu/shookie)의
+"메인 에이전트는 조정만 하고 실제 판단은 서브 에이전트에 위임한다" 패턴을 참고했다.
+
+```text
+infra/llm/
+  harness.py          run_json (단발 JSON mode) / run_agent (도구 호출 루프)
+  orchestrator.py      원문 1건 → 요청 N건 추출 → 요청마다 계약 대조 위임(병렬)
+  subagents/
+    contract_match.py  계약 대조. read_contract / search_materials 도구 2개
+    checklist.py        체크리스트. 도구 없음
+    reply_draft.py       답변 초안. 도구 없음
+```
+
+다만 조정(orchestration) 자체를 LLM에 맡기지 않는다. "원문에서 요청을 뽑고, 각
+요청을 계약과 대조한다"는 순서는 규칙이므로 `infra/llm/orchestrator.py`의 코드가
+정하고, 판단(무엇이 요청인지, 계약 범위 안인지)만 모델에 맡긴다. 슬랙 봇처럼
+사용자 발화를 실시간으로 라우팅할 필요가 없는, 내부 배치 파이프라인이기 때문이다.
+
+`run_agent`가 지키는 규율:
+
+- **컨텍스트 최소 전달** — 서브 에이전트에게는 요청 요약·인용·원문만 준다. 다른
+  요청이나 무관한 프로젝트 데이터는 넘기지 않는다.
+- **도구 접근은 읽기 전용** — `read_contract`, `search_materials` 모두 조회만 한다.
+  계약을 바꾸거나 메일을 보내는 도구는 어떤 서브 에이전트에도 주지 않는다(8절).
+- **턴 예산과 시간 예산을 분리** — `MAX_AGENT_TURNS`(도구 호출 최대 6회)와
+  `AGENT_BUDGET_SECONDS`(전체 30초)를 함께 둔다. 턴 하나가 8초(client.py) 걸려도
+  전체가 48초까지 늘어나지 않는다. 예산을 넘기면 도구를 빼고 결론만 한 번 더 물어
+  검증 가능한 답을 받는다.
+- **독립 조회는 병렬** — 한 원문에 요청이 여럿이면 계약 대조를 동시에 돌린다
+  (`asyncio.gather`). 요청 3건을 직렬로 돌리면 시연에서 기다릴 수 없다.
+- **소유권은 도구를 만들 때 묶는다** — `ownerId`·`projectId`는 도구 클로저에 미리
+  박아두고, 모델이 인자로 지정하게 두지 않는다. 3절의 소유권 규칙이 도구 경계에도
+  그대로 적용된다.
+
+모델이 도구 결과에서 옮겨 적은 인용(`documentQuote`)은 하네스가 아니라
+`core/grounding.py:is_quote_in`으로 다시 검증한다. 도구가 보여준 적 없는 문서를
+근거로 대거나 인용이 허구면, 판정이 초록이었을 때만 주황으로 내린다(빨강은 "계약에
+없다"는 사실 자체가 근거라 그대로 둔다). L2 근거 검증 규칙을 문서 대조에도 같은
+방식으로 적용한 것이다.
 
 ## 6. 화면에 내보낼 근거
 
@@ -157,6 +213,9 @@ AnalysisRun
 2. `feat/#6` Gmail/Slack OAuth·조회 어댑터의 FastAPI 이관 (완료)
 3. `Project`, `ProjectMaterial`, `SourceMessage`와 sync (완료)
 4. `AnalysisRun`·요청 판정·자료 분류와 근거 검증 (완료)
-5. 체크리스트·답변 초안, 증분 worker·감사 로그 (보류)
+5. 요청 다건 추출 + 계약 대조 서브 에이전트 + 오케스트레이터 (완료, 5-a절)
+6. 3색 판정(`EXTRA_REQUEST`) → `Requirement` 9상태 합의 흐름 연결 (완료)
+7. 체크리스트·답변 초안 생성 API (완료, 발송은 아직 없음)
+8. 증분 worker(Slack Events·Gmail historyId)·감사 로그 (보류)
 
 공개 필드·API는 `PRODUCT_API_DESIGN.md`와 Swagger를 함께 갱신한다.

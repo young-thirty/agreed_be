@@ -31,6 +31,8 @@ def public_requirement(requirement: Requirement) -> dict[str, object]:
     }
     if requirement.projectId is not None:
         data["projectId"] = str(requirement.projectId)
+    if requirement.sourceRequestId is not None:
+        data["sourceRequestId"] = str(requirement.sourceRequestId)
     return data
 
 

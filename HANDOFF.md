@@ -37,6 +37,10 @@ provider token은 백엔드에서만 다룹니다.
 - 프로젝트별 계약·요구사항 조회/전이/apply
 - 프로젝트 Gmail 상대·Slack 채널 source-link 등록과 sync
 - 원문 저장 후 BackgroundTasks 요청 3색 판정·근거·자료 종류 분류
+- 요청 다건 추출(원문 1건→요청 N건) + 계약 대조 서브 에이전트(`infra/llm/`
+  하네스·오케스트레이터, DATA_AI_PIPELINE.md 5-a절)
+- `EXTRA_REQUEST` 판정 → `Requirement` 9상태 합의 흐름 자동 연결
+- 체크리스트·답변 초안 생성 API, 대응 상태(`responseStatus`) 변경 API
 
 Gmail 권한은 현재 `gmail.readonly`뿐입니다. 화면의 답장은 “초안 생성”까지이며
 실제 메일 전송 API는 아직 만들지 않았습니다.
@@ -76,12 +80,15 @@ gitignore 대상이며 파일 권한은 600으로 맞춥니다.
 | POST | `/api/slack/messages` | 채널 메시지 |
 | POST | `/api/slack/thread` | 스레드 답글 |
 | GET | `/api/slack/file` | 인증된 파일 프록시 |
+| POST | `/api/requests/{requestId}/checklist` | 답변 전 확인 항목 생성 |
+| POST | `/api/requests/{requestId}/reply-draft` | 답변 초안 생성(발송 안 함) |
+| PATCH | `/api/requests/{requestId}/response-status` | 대응 상태 변경 |
 
 모든 브라우저 API 호출은 `credentials: include`를 사용합니다.
 
 ## 시연 이후 보류한 다음 단계
 
-1. 체크리스트·답변 초안 생성/발송
+1. 체크리스트·답변 초안 실제 발송(생성 API는 완료)
 2. 범용 파일 업로드·S3·OCR과 Gmail 첨부 추출
 3. Slack Events/Gmail push, 증분 historyId, 큐/워커
 4. 페이지네이션·검색·실시간 갱신
