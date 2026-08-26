@@ -61,6 +61,15 @@ Inbound만 유발한다. Outbound는 기존 프로젝트/티켓 맥락 갱신에
 - `GET /api/projects/{projectId}/context`
 - 티켓 상세의 `analysis.intents`, 고정 4개 판단 필드, `devContext`, GitHub/문서 근거
 - 로컬 MongoDB E2E에서 solution 생성·캐시, 티켓 상세, 프로젝트 메시지/컨텍스트 응답 확인
+- Gmail/Slack 첨부 PDF 텍스트 추출, 스캔 PDF·이미지 Tesseract `kor+eng` OCR,
+  DOCX·텍스트 추출 후 `ProjectMaterial.extractedText` 저장
+- 자료 추출 상태(`textExtractionStatus`, `hasExtractedText`)와 자료 분류 상태를 분리
+
+DeepSeek은 파일·이미지를 직접 받지 않는 텍스트 모델이다. 따라서 Vision 모델을
+붙이는 방향으로 되돌리지 말고 `infra/document_text.py`의 로컬 추출/OCR 결과만
+DeepSeek 자료 분류·계약 대조 입력으로 사용한다. PDF는 텍스트 레이어 우선,
+OCR은 최대 5쪽이라는 시연용 지연 상한을 유지한다. 기존 자료는 source sync 또는
+Gmail discover를 다시 실행하면 `v3-ocr-summary` 분석으로 재처리된다.
 
 Gmail/Slack OAuth 자체는 이미 동작한다. 운영 callback은 다음과 같다.
 

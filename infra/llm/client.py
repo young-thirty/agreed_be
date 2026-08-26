@@ -12,7 +12,7 @@ import os
 from openai import AsyncOpenAI
 
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
-EXTRACT_MODEL = "deepseek-chat"
+EXTRACT_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash")
 
 # 타임아웃 8초. 재시도는 이 클라이언트가 아니라 extract.py가 L1 검증 실패 시
 # 직접 1회만 한다. max_retries를 0으로 둬야 타임아웃까지 중복 재시도되지 않는다.

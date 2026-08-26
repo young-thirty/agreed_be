@@ -76,6 +76,8 @@ def public_material(material: ProjectMaterial) -> dict[str, object]:
         "direction": material.direction,
         "communicatedAt": material.communicatedAt.isoformat() + ("Z" if material.communicatedAt.tzinfo is None else ""),
         "classificationStatus": material.classificationStatus,
+        "textExtractionStatus": material.textExtractionStatus,
+        "hasExtractedText": bool(material.extractedText),
         "documentType": material.documentType,
         "summary": material.summary,
         "sourceChannel": material.sourceChannel,

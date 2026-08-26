@@ -20,7 +20,7 @@ class AnalysisRun(Document):
     status: ProcessingStatus = "PENDING"
     inputHash: str
     promptVersion: str = "v1"
-    model: str = "deepseek-chat"
+    model: str = "deepseek-v4-flash"
     errorCode: str | None = None
     startedAt: datetime | None = None
     completedAt: datetime | None = None

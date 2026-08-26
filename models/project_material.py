@@ -35,6 +35,9 @@ class ProjectMaterial(Document):
     sizeBytes: int | None = None
     storageKey: str | None = None
     extractedText: str | None = None
+    # 분류 성공과 원문 텍스트 추출 성공은 다른 상태다. OCR 실패 뒤 파일명
+    # 폴백으로 분류가 끝나도 화면·운영자가 누락을 구분할 수 있게 별도로 둔다.
+    textExtractionStatus: ProcessingStatus = "PENDING"
     direction: Direction = "RECEIVED"
     communicatedAt: datetime
     classificationStatus: ProcessingStatus = "PENDING"

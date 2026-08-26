@@ -132,8 +132,10 @@ API가 많아 보이지만 **네 묶음**입니다. 위에서 아래로 한 방�
 
 ## 아직 보류한 범위
 
-실시간 provider 이벤트(Slack Events·Gmail watch), 큐/워커, OCR·텍스트 추출,
+실시간 provider 이벤트(Slack Events·Gmail watch), 큐/워커,
 페이지네이션·검색, 답장 실제 발송, 수동 파일 업로드는 시연 이후 단계입니다.
+Gmail/Slack 첨부의 PDF·DOCX·텍스트 추출과 스캔 PDF·이미지 OCR은 구현되어 있으며,
+DeepSeek에는 원본 파일이 아니라 검증 가능한 추출 텍스트만 전달합니다.
 도메인 목표 모델과 미결정 정책 설계안은 저장소의 `DOMAIN_SPEC.md`에 있습니다.
 """.strip()
 

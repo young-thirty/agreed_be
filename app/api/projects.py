@@ -16,6 +16,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from pymongo.errors import DuplicateKeyError
+from starlette.concurrency import run_in_threadpool
 
 from app.api.slack import SAFE_INLINE_IMAGE_TYPES
 from app.auth import get_current_user
@@ -32,6 +33,7 @@ from core.project_data import (
     DevelopmentStatus, DocumentType, ProcessingStatus, ProjectSort, ProjectStatus,
     RelatedFile, SourceChannel, TicketCategory, TicketSolution, TicketStatus,
 )
+from infra.document_text import extract_document_text
 from infra.integrations import IntegrationError
 from infra.integrations.gmail import (
     GMAIL_SCOPES, fetch_attachment, fetch_message_attachment, fetch_recent, refresh_access_token,
@@ -714,6 +716,10 @@ async def discover_materials(
     connection = await latest_gmail_connection(str(current_user.id))
     if connection is None:
         return fail("Gmail이 연결되어 있지 않습니다.", 404)
+    try:
+        connection, token = await _gmail_connection_token(connection)
+    except (IntegrationError, TokenEncryptionError, RuntimeError, ValueError):
+        return fail("Gmail 첨부를 가져오지 못했습니다. 연결 상태를 확인해 주세요.", 502)
 
     discovered = 0
     for email in body.emails:
@@ -748,10 +754,16 @@ async def discover_materials(
                     existing.senderDisplay = sender_display
                     existing.updatedAt = _now()
                     await existing.save()
-                continue
-            discovered += 1
-            material_run = await _ensure_material_run(material)
-            background_tasks.add_task(classify_material_run, str(material_run.id))
+                material = existing
+            else:
+                discovered += 1
+            if material is not None:
+                if not material.extractedText:
+                    await _store_gmail_attachment_original(
+                        material, token, email.id, attachment.attachmentId
+                    )
+                material_run = await _ensure_material_run(material)
+                background_tasks.add_task(classify_material_run, str(material_run.id))
     return ok({"discoveredCount": discovered})
 
 
@@ -938,19 +950,19 @@ async def _ensure_material_run(material: ProjectMaterial) -> AnalysisRun:
     input_hash = _hash((material.contentHash or material.fileName) + str(material.id))
     existing = await AnalysisRun.find_one(
         AnalysisRun.ownerId == material.ownerId, AnalysisRun.targetType == "MATERIAL_CLASSIFICATION",
-        AnalysisRun.inputHash == input_hash, AnalysisRun.promptVersion == "v2-summary",
+        AnalysisRun.inputHash == input_hash, AnalysisRun.promptVersion == "v3-ocr-summary",
     )
     if existing:
         return existing
     run = AnalysisRun(ownerId=material.ownerId, projectId=material.projectId, targetType="MATERIAL_CLASSIFICATION",
                       materialId=material.id, inputHash=input_hash, model=EXTRACT_MODEL,
-                      promptVersion="v2-summary")
+                      promptVersion="v3-ocr-summary")
     try:
         await run.insert()
     except DuplicateKeyError:
         existing = await AnalysisRun.find_one(
             AnalysisRun.ownerId == material.ownerId, AnalysisRun.targetType == "MATERIAL_CLASSIFICATION",
-            AnalysisRun.inputHash == input_hash, AnalysisRun.promptVersion == "v2-summary",
+            AnalysisRun.inputHash == input_hash, AnalysisRun.promptVersion == "v3-ocr-summary",
         )
         if existing:
             return existing
@@ -1153,6 +1165,10 @@ async def classify_material_run(run_id: str):
     run.status, run.startedAt, run.updatedAt = "PROCESSING", _now(), _now()
     await run.save()
     try:
+        if not material.extractedText and material.storageKey:
+            content = get_object(material.storageKey)
+            if content:
+                await _extract_into_material(material, content, material.mimeType)
         kind: DocumentType | None = None
         summary: str | None = None
         if material.extractedText:
@@ -1182,8 +1198,27 @@ async def classify_material_run(run_id: str):
         await run.save()
 
 
+async def _extract_into_material(
+    material: ProjectMaterial, content: bytes, mime_type: str | None
+) -> bool:
+    """CPU 작업을 thread pool에서 실행하고 추출 상태가 바뀌었는지 반환한다."""
+
+    if material.extractedText or not content:
+        return False
+    material.textExtractionStatus = "PROCESSING"
+    extracted = await run_in_threadpool(
+        extract_document_text, content, mime_type, material.fileName
+    )
+    if not extracted:
+        material.textExtractionStatus = "FAILED"
+        return True
+    material.extractedText = extracted
+    material.textExtractionStatus = "COMPLETED"
+    return True
+
+
 async def _store_material_original(material: ProjectMaterial, connection_id: str) -> None:
-    """Slack 원본 파일을 한 번만 내려받아 S3에 올린다.
+    """Slack 원본을 받아 S3 저장과 텍스트/OCR 추출을 함께 처리한다.
 
     실패해도 예외를 위로 던지지 않는다. 원본 저장은 부가 기능이라, 이게
     실패한다고 자료 등록·분류까지 막히면 안 된다.
@@ -1196,15 +1231,24 @@ async def _store_material_original(material: ProjectMaterial, connection_id: str
         downloaded = await fetch_file(bot_token=access_token(connection), file_id=material.providerFileId)
     except Exception:
         return
-    key = f"materials/{material.ownerId}/{material.projectId}/{material.id}/{downloaded.fileName}"
-    stored_key = put_object(key, downloaded.content, downloaded.contentType)
-    if stored_key is None:
-        return
-    material.storageKey = stored_key
-    material.mimeType = downloaded.contentType
-    material.sizeBytes = len(downloaded.content)
-    material.updatedAt = _now()
-    await material.save()
+    changed = False
+    if material.mimeType != downloaded.contentType:
+        material.mimeType = downloaded.contentType
+        changed = True
+    if material.sizeBytes != len(downloaded.content):
+        material.sizeBytes = len(downloaded.content)
+        changed = True
+    if await _extract_into_material(material, downloaded.content, downloaded.contentType):
+        changed = True
+    if has_s3():
+        key = f"materials/{material.ownerId}/{material.projectId}/{material.id}/{downloaded.fileName}"
+        stored_key = put_object(key, downloaded.content, downloaded.contentType)
+        if stored_key is not None and material.storageKey != stored_key:
+            material.storageKey = stored_key
+            changed = True
+    if changed:
+        material.updatedAt = _now()
+        await material.save()
 
 
 # Gmail API가 첨부 하나에 매기는 상한(25MB)보다 여유 있게 낮춰 둔다. 서버가
@@ -1236,13 +1280,18 @@ async def _store_gmail_attachment_original(
         )
     except Exception:
         return
-    key = f"materials/{material.ownerId}/{material.projectId}/{material.id}/{downloaded.fileName}"
-    stored_key = put_object(key, downloaded.content, downloaded.contentType)
-    if stored_key is None:
-        return
-    material.storageKey = stored_key
-    material.updatedAt = _now()
-    await material.save()
+    changed = await _extract_into_material(
+        material, downloaded.content, downloaded.contentType
+    )
+    if has_s3():
+        key = f"materials/{material.ownerId}/{material.projectId}/{material.id}/{downloaded.fileName}"
+        stored_key = put_object(key, downloaded.content, downloaded.contentType)
+        if stored_key is not None and material.storageKey != stored_key:
+            material.storageKey = stored_key
+            changed = True
+    if changed:
+        material.updatedAt = _now()
+        await material.save()
 
 
 async def _fetch_gmail_material_live(material: ProjectMaterial, owner: User):
@@ -1315,6 +1364,8 @@ async def _fetch_material_live(material: ProjectMaterial, owner: User) -> bytes 
         changed = True
     if material.sizeBytes is None:
         material.sizeBytes = len(downloaded.content)
+        changed = True
+    if await _extract_into_material(material, downloaded.content, downloaded.contentType):
         changed = True
     if has_s3():
         key = f"materials/{material.ownerId}/{material.projectId}/{material.id}/{downloaded.fileName}"
@@ -1425,7 +1476,7 @@ async def sync_source_link(
                                 ProjectMaterial.connectionId == connection.externalId,
                                 ProjectMaterial.providerFileId == f"{email.id}:{attachment.id}",
                             )
-                        if material and created_material and has_s3():
+                        if material and (created_material or not material.extractedText):
                             await _store_gmail_attachment_original(
                                 material, token, email.id, attachment.attachmentId
                             )
@@ -1474,7 +1525,7 @@ async def sync_source_link(
                             )
                         # 새로 만든 자료만 원본을 내려받는다. 이미 있던 자료를
                         # 재동기화 때마다 다시 내려받지 않는다.
-                        if material and created_material and has_s3():
+                        if material and (created_material or not material.extractedText):
                             await _store_material_original(material, connection.externalId)
                         if material:
                             material_run = await _ensure_material_run(material)

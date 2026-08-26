@@ -89,6 +89,23 @@ GET /api/projects/{projectId}/requests
 
 각 단계는 Pydantic 구조화 출력과 고정된 입력·출력을 갖는다.
 
+### 문서 입력 전처리
+
+DeepSeek에는 파일·이미지를 직접 보내지 않는다. Gmail/Slack 첨부 원본을 서버가
+먼저 `infra/document_text.py`로 텍스트화한 뒤 `ProjectMaterial.extractedText`에
+저장하고, 이후 자료 분류·계약 대조 파이프라인은 그 텍스트만 입력으로 쓴다.
+
+- PDF: 텍스트 레이어를 우선 추출하고, 글자가 거의 없는 페이지만 OCR한다.
+- 이미지: Tesseract `kor+eng` OCR을 사용한다.
+- DOCX·TXT·MD·CSV·JSON·HTML: 구조/텍스트를 직접 추출한다.
+- 입력 12MB, PDF 20쪽, OCR 5쪽, 결과 30,000자로 제한한다.
+- 손상·미지원·빈 문서는 수집을 막지 않고 파일명 분류로 강등한다.
+
+`classificationStatus`와 `textExtractionStatus`는 분리한다. 따라서 파일명 폴백으로
+분류는 끝났지만 OCR은 실패한 자료를 API의 `hasExtractedText=false`로 구분할 수 있다.
+OCR은 CPU·메모리와 Docker 이미지 크기를 늘리므로 전체 PDF를 무조건 이미지화하지
+않고 위 상한과 텍스트 우선 정책을 유지한다.
+
 1. **정규화** — 서명, 이전 답장 인용, Slack 시스템 이벤트를 분리하고 발화 ID를 붙인다.
 2. **요청 추출** — 원문에서 클라이언트의 요청을 0건 이상 찾는다. 한 건에 요청이 여러
    개면 각각을 따로 뽑는다(`infra/llm/orchestrator.py`).
@@ -216,6 +233,7 @@ AnalysisRun
 5. 요청 다건 추출 + 계약 대조 서브 에이전트 + 오케스트레이터 (완료, 5-a절)
 6. 3색 판정(`EXTRA_REQUEST`) → `Requirement` 9상태 합의 흐름 연결 (완료)
 7. 체크리스트·답변 초안 생성 API (완료, 발송은 아직 없음)
-8. 증분 worker(Slack Events·Gmail historyId)·감사 로그 (보류)
+8. Gmail/Slack 첨부 텍스트 추출·스캔 OCR (완료, 수동 업로드는 보류)
+9. 증분 worker(Slack Events·Gmail historyId)·감사 로그 (보류)
 
 공개 필드·API는 `PRODUCT_API_DESIGN.md`와 Swagger를 함께 갱신한다.

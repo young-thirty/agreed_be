@@ -209,7 +209,9 @@ PATCH /api/requests/{requestId}/ticket-status    active ↔ done ↔ rejected. A
 POST  /api/requests/{requestId}/solution         계약 범위·개발 현황·영향·작업 가능 여부를 종합
 ```
 
-자료는 파일명+추출 텍스트로 5종 중 하나를 구조화 분류한다. 정상 분류의 그 외 문서는
+자료는 파일명+추출 텍스트로 5종 중 하나를 구조화 분류한다. PDF 텍스트 레이어와
+DOCX/텍스트는 직접 추출하고, 스캔 PDF·이미지는 Tesseract `kor+eng` OCR로 보완한다.
+DeepSeek에는 파일/이미지를 직접 보내지 않고 추출된 텍스트만 보낸다. 정상 분류의 그 외 문서는
 OTHER, 파일/모델 작업 실패만 FAILED/null이다. DeepSeek은 기존 8초 timeout, SDK retry 0,
 스키마 실패 1회 재시도를 유지하고 고정 시연 입력은 contentHash 결과를 미리 저장한다.
 
@@ -238,9 +240,11 @@ Git 탐색 서브 에이전트(`POST /api/projects/{id}/git/ask`)와 Slack 파�
 `repoFullName`("owner/repo")만 있으면 된다. 워크스페이스는 질문마다 얕게 clone하고
 답변 후 지운다 — 캐시하지 않는다. S3는 버킷 미설정 시 조용히 건너뛴다.
 
+완료: Gmail/Slack 첨부의 PDF·이미지 OCR, PDF/DOCX/텍스트 추출,
+`ProjectMaterial.extractedText` 저장과 DeepSeek 자료 분류 연결.
+
 보류: Slack Events/Gmail history/watch, worker queue, pagination/검색/실시간 전송,
-OCR·텍스트 추출(원본은 S3에 저장하지만 ProjectMaterial.extractedText 채우는 것은 별도),
-Gmail 첨부(attachmentRefs 비어 있음), 수동 업로드 처리, git 탐색 결과를 요청 판정에
+수동 업로드 처리, git 탐색 결과를 요청 판정에
 자동으로 엮는 것(현재는 독립 호출), 요청 근거 상세 DTO의 공식 확정(현재
 `GET /api/requests/{id}`가 비공식으로 내려줌), 답장 실제 발송(초안 생성까지만),
 감사 로그, REJECTED 상태. 기존 ContractDiff와 합의 후 apply는 project 범위로 유지한다.

@@ -78,6 +78,8 @@ class ProjectMaterialSummary(BaseModel):
     direction: Direction
     communicatedAt: datetime
     classificationStatus: ProcessingStatus
+    textExtractionStatus: ProcessingStatus
+    hasExtractedText: bool
     documentType: DocumentType | None = None
     summary: str | None = None
 

@@ -6,8 +6,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# git 탐색 서브 에이전트가 저장소를 clone하는 데 필요하다.
-RUN apt-get update && apt-get install -y --no-install-recommends git \
+# git은 저장소 탐색, Tesseract 한국어·영어 데이터는 스캔 문서 OCR에 필요하다.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      git tesseract-ocr tesseract-ocr-eng tesseract-ocr-kor \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt ./

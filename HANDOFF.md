@@ -42,6 +42,8 @@ provider token은 백엔드에서만 다룹니다.
 - 프로젝트 Gmail 상대·Slack 채널 source-link 등록과 sync
 - Git 저장소 연결(`repoFullName`)과 질문 응답형 코드 탐색 서브 에이전트(`/git/ask`)
 - Slack 파일 원본을 S3에 저장(`ProjectMaterial.storageKey`), 버킷 미설정 시 건너뜀
+- Gmail/Slack 첨부의 PDF·DOCX·텍스트 추출 및 스캔 PDF·이미지 한국어/영어 OCR
+- 추출 텍스트를 자료 분류·계약 대조 AI에 연결하고 추출 성공 여부를 별도 공개
 - 원문 저장 후 BackgroundTasks 요청 3색 판정·근거·자료 종류 분류
 - 요청 다건 추출(원문 1건→요청 N건) + 계약 대조 서브 에이전트(`infra/llm/`
   하네스·오케스트레이터, DATA_AI_PIPELINE.md 5-a절)
@@ -95,7 +97,7 @@ gitignore 대상이며 파일 권한은 600으로 맞춥니다.
 ## 시연 이후 보류한 다음 단계
 
 1. 체크리스트·답변 초안 실제 발송(생성 API는 완료)
-2. 범용 파일 업로드·S3·OCR과 Gmail 첨부 추출
+2. 범용 수동 파일 업로드 UI/API (채널 첨부 OCR·추출은 완료)
 3. Slack Events/Gmail push, 증분 historyId, 큐/워커
 4. 페이지네이션·검색·실시간 갱신
 5. 연동 해제·provider revoke, 운영 rate limit과 보관 정책
