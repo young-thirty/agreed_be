@@ -7,6 +7,7 @@ from app.api.projects import (
     _should_analyze_message,
     _status_rank,
 )
+from app.api.tickets import _analysis_payload
 
 
 class InboundGateTest(unittest.TestCase):
@@ -55,6 +56,42 @@ class TicketSolutionInvalidationTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(ticket.solution)
         self.assertEqual(ticket.sourceMessageIds, ["message-2"])
         self.assertEqual(ticket.requestEvidence[0]["quote"], "추가 요청입니다")
+
+
+class TicketAnalysisPayloadTest(unittest.TestCase):
+    def test_github_link_without_development_result_does_not_crash(self):
+        solution = SimpleNamespace(
+            developmentStatus=None,
+            impactAnalysis=None,
+            feasibility=None,
+            replyDraft="",
+            adviceMessage="확인이 필요합니다.",
+            adviceReason="개발 현황을 확인하지 못했습니다.",
+        )
+        ticket = SimpleNamespace(
+            id="ticket-1",
+            ticketCode="TCK-01",
+            solution=solution,
+            aiDecisionStatus="OUT_OF_SCOPE_COORDINATION_REQUIRED",
+            requestEvidence=[],
+            documentEvidence=[],
+            summaryTitle="카카오 로그인",
+            currentSummary="",
+            decisionReason="",
+            category="기능 요청",
+            requirement="카카오 로그인 추가",
+        )
+
+        payload = _analysis_payload(
+            ticket,
+            None,
+            repo_full_name="acme/server",
+        )
+
+        self.assertEqual(payload["devContext"]["repoFullName"], "acme/server")
+        self.assertEqual(payload["devContext"]["subject"], "카카오 로그인")
+        self.assertFalse(payload["devContext"]["checked"])
+        self.assertEqual(payload["devContext"]["items"], [])
 
 
 if __name__ == "__main__":
