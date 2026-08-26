@@ -75,8 +75,14 @@ def _hash(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def _should_analyze_message(direction: str, raw_text: str) -> bool:
+    """고객이 보낸 본문만 티켓 분석을 유발한다."""
+
+    return direction == "RECEIVED" and bool(raw_text.strip())
+
+
 def _status_rank(status: ProjectStatus) -> int:
-    return {"ACTIVE": 0, "DRAFT": 1, "COMPLETED": 2}[status]
+    return {"ACTIVE": 0, "DRAFT": 1, "COMPLETED": 2, "REJECTED": 3}[status]
 
 
 class ProjectUpdateRequest(BaseModel):
@@ -423,6 +429,28 @@ class MaterialTicketRequest(BaseModel):
     ticketId: PydanticObjectId | None = None
 
 
+def _decision_reply_inputs(
+    selected_items: list[str], decision: TicketDecision | None
+) -> list[str]:
+    selected = [text.strip() for text in selected_items if text.strip()][:6]
+    if decision is None:
+        return selected
+    handling_text = {
+        "link": "사람이 이 요청을 현재 티켓에 반영하기로 결정했습니다.",
+        "create": "사람이 이 요청을 별도 티켓으로 분리하기로 결정했습니다.",
+        "ignore": "사람이 이 요청을 작업에 반영하지 않기로 결정했습니다.",
+    }[decision.handling]
+    return [
+        handling_text,
+        *selected,
+        *(
+            f"사람이 확정한 {key}: {value}"
+            for key, value in decision.values.items()
+            if value.strip()
+        ),
+    ]
+
+
 async def _owned_request(request_id: PydanticObjectId, owner_id: PydanticObjectId) -> ClientRequest | None:
     return await ClientRequest.find_one(
         ClientRequest.id == request_id, ClientRequest.ownerId == owner_id
@@ -456,16 +484,21 @@ async def ticket_solution(
     if item.solution is not None and not refresh:
         return ok(item.solution.model_dump(mode="json"))
 
-    message = await SourceMessage.find_one(
-        SourceMessage.id == item.sourceMessageId, SourceMessage.ownerId == item.ownerId
-    )
+    source_ids = list(dict.fromkeys([item.sourceMessageId, *item.sourceMessageIds]))
+    messages = await SourceMessage.find(
+        SourceMessage.ownerId == item.ownerId,
+        {"_id": {"$in": source_ids}},
+    ).sort(SourceMessage.occurredAt).to_list()
+    request_quotes = [e.quote for e in item.requestEvidence if e.quote.strip()]
     draft = await build_solution(
         owner_id=item.ownerId,
         project_id=item.projectId,
         summary_title=item.summaryTitle or "제목 없는 요청",
-        requirement=item.requirement,
-        request_quote=item.requestEvidence[0].quote if item.requestEvidence else "",
-        raw_text=message.rawText if message else "",
+        requirement="\n".join([item.requirement, *request_quotes]).strip(),
+        request_quote="\n".join(request_quotes)[:2000],
+        raw_text="\n\n".join(
+            message.rawText for message in messages if message.rawText.strip()
+        ),
     )
 
     # 현재 티켓 전용 자료를 먼저 쓰고, 모자란 자리는 프로젝트 공용 자료로 채운다.
@@ -550,20 +583,31 @@ async def request_reply_draft(
     item = await _owned_request(request_id, current_user.id)
     if item is None:
         return fail("요청을 찾을 수 없습니다.", 404)
-    selected = [text.strip() for text in body.selectedItems if text.strip()][:6]
-    reply = await build_reply_draft(
-        summary_title=item.summaryTitle or "", selected_items=selected, tone=body.tone
-    )
+    decision = None
     if body.sourceMessageId is not None:
         decision = await TicketDecision.find_one(
             TicketDecision.ownerId == current_user.id,
             TicketDecision.requestId == item.id,
             TicketDecision.sourceMessageId == body.sourceMessageId,
         )
-        if decision is not None:
-            decision.drafts[body.tone] = reply
-            decision.updatedAt = _now()
-            await decision.save()
+    else:
+        decision = (
+            await TicketDecision.find(
+                TicketDecision.ownerId == current_user.id,
+                TicketDecision.requestId == item.id,
+                TicketDecision.sentAt == None,  # noqa: E711
+            )
+            .sort(-TicketDecision.updatedAt)
+            .first_or_none()
+        )
+    selected = _decision_reply_inputs(body.selectedItems, decision)
+    reply = await build_reply_draft(
+        summary_title=item.summaryTitle or "", selected_items=selected, tone=body.tone
+    )
+    if decision is not None:
+        decision.drafts[body.tone] = reply
+        decision.updatedAt = _now()
+        await decision.save()
     return ok({"body": reply})
 
 
@@ -929,6 +973,8 @@ async def _attach_to_ticket(
         ticket.requestEvidence.append(
             {"quote": item.requestQuote, "sourceMessageId": str(message.id)}
         )
+    # 후속 고객 메시지가 붙으면 기존 솔루션은 더 이상 최신 맥락이 아니다.
+    ticket.solution = None
     ticket.updatedAt = _now()
     await ticket.save()
 
@@ -1038,6 +1084,12 @@ async def analyze_source_run(run_id: str):
         return
     message = await SourceMessage.get(run.sourceMessageId)
     if message is None:
+        return
+    if message.direction != "RECEIVED":
+        run.status, run.errorCode, run.completedAt, run.updatedAt = (
+            "FAILED", "OUTBOUND_NOT_ANALYZED", _now(), _now()
+        )
+        await run.save()
         return
     run.status, run.startedAt, run.updatedAt = "PROCESSING", _now(), _now()
     await run.save()
@@ -1303,7 +1355,7 @@ async def sync_source_link(
                 )
                 if created:
                     new_count += 1
-                    if email.body.strip():
+                    if _should_analyze_message(direction, email.body):
                         run = await _ensure_run(message)
                         run_ids.append(str(run.id))
                         background_tasks.add_task(analyze_source_run, str(run.id))

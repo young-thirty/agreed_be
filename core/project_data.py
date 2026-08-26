@@ -5,7 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-ProjectStatus = Literal["ACTIVE", "DRAFT", "COMPLETED"]
+ProjectStatus = Literal["ACTIVE", "DRAFT", "COMPLETED", "REJECTED"]
 ProjectSort = Literal["status", "updatedAt", "createdAt"]
 SourceChannel = Literal["GMAIL", "SLACK", "GITHUB"]
 ProcessingStatus = Literal["PENDING", "PROCESSING", "COMPLETED", "FAILED"]

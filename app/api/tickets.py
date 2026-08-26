@@ -208,7 +208,9 @@ def _analysis_payload(
         } if repo_full_name else None),
         "feasibility": solution.feasibility.model_dump(mode="json") if solution and solution.feasibility else None,
         "evidence": evidence,
-        "relatedTicketId": str(ticket.id),
+        # 티켓 매칭 결과 ID를 아직 영속하지 않으므로 현재 티켓 자신이나 최근
+        # 티켓을 관련 티켓인 것처럼 내보내지 않는다.
+        "relatedTicketId": None,
         "ticketProposal": {
             "title": ticket.summaryTitle or "새 고객 요청",
             "category": ticket.category,
@@ -309,11 +311,7 @@ async def _work_item(
         ProjectSourceLink.projectId == ticket.projectId,
         ProjectSourceLink.sourceChannel == "GITHUB",
     )
-    related = await ClientRequest.find(
-        ClientRequest.ownerId == owner_id,
-        ClientRequest.projectId == ticket.projectId,
-        ClientRequest.id != ticket.id,
-    ).sort(-ClientRequest.updatedAt).limit(3).to_list()
+    related: list[ClientRequest] = []
     received = [item for item in messages if item.direction == "RECEIVED"]
     last_message = received[-1] if received else None
     pending_message = next((
