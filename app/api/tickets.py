@@ -129,6 +129,8 @@ def _analysis_payload(
     related_tickets: list[ClientRequest] | None = None,
 ) -> dict[str, Any]:
     solution = ticket.solution
+    development_status = solution.developmentStatus if solution else None
+    impact_analysis = solution.impactAnalysis if solution else None
     scope_label = {
         "IN_SCOPE_ACTION_REQUIRED": "기존 계약 범위 안에서 처리할 수 있습니다",
         "OUT_OF_SCOPE_COORDINATION_REQUIRED": "범위가 애매해 확인이 필요합니다",
@@ -199,12 +201,17 @@ def _analysis_payload(
         "fields": fields,
         "missingInfo": _missing_info(ticket),
         "devContext": ({
-            "subject": solution.developmentStatus.targetFeature or ticket.summaryTitle or "개발 현황",
+            "subject": (
+                development_status.targetFeature if development_status else ""
+            ) or ticket.summaryTitle or "개발 현황",
             "items": [{"state": "progress", "text": text} for text in development_items],
-            "relatedWork": [{"title": ref, "note": "GitHub 근거"} for ref in (solution.developmentStatus.relatedRefs if solution and solution.developmentStatus else [])],
-            "impactAreas": solution.impactAnalysis.codeAreas if solution and solution.impactAnalysis else [],
+            "relatedWork": [
+                {"title": ref, "note": "GitHub 근거"}
+                for ref in (development_status.relatedRefs if development_status else [])
+            ],
+            "impactAreas": impact_analysis.codeAreas if impact_analysis else [],
             "repoFullName": repo_full_name,
-            "checked": solution is not None and solution.developmentStatus is not None,
+            "checked": development_status is not None,
         } if repo_full_name else None),
         "feasibility": solution.feasibility.model_dump(mode="json") if solution and solution.feasibility else None,
         "evidence": evidence,
