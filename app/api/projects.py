@@ -1245,16 +1245,9 @@ async def _store_gmail_attachment_original(
     await material.save()
 
 
-async def _fetch_material_live(material: ProjectMaterial, owner: User) -> bytes | None:
-    """S3에 원본이 없는 Gmail 자료를 그 자리에서 받아온다. 화면이 눌렀을 때만 부른다.
-
-    discover 단계는 목록만 만들고 원본을 미리 내려받지 않으므로, 실제로
-    열어보는 이 시점이 첫 다운로드다. 성공하면 다음부터는 S3에서 바로
-    나가도록 캐시해 둔다.
-    """
+async def _fetch_gmail_material_live(material: ProjectMaterial, owner: User):
     if (
-        material.sourceChannel != "GMAIL"
-        or material.connectionId is None
+        material.connectionId is None
         or material.providerFileId is None
         or ":" not in material.providerFileId
     ):
@@ -1269,19 +1262,69 @@ async def _fetch_material_live(material: ProjectMaterial, owner: User) -> bytes 
         message_id, part_id = material.providerFileId.split(":", 1)
         # attachmentId는 일회성 토큰이라 discover 시점 값을 못 쓴다. part_id로
         # 메시지를 다시 찾아 이번 토큰을 새로 받는다.
-        downloaded = await fetch_message_attachment(
+        return await fetch_message_attachment(
             access_token=token, message_id=message_id, part_id=part_id,
         )
     except Exception:
         return None
 
+
+async def _fetch_slack_material_live(material: ProjectMaterial):
+    """Slack 파일을 fileId로 다시 받아온다.
+
+    Gmail의 attachmentId와 달리 Slack의 fileId는 일회성 토큰이 아니다.
+    동기화 때 providerFileId에 저장해 둔 값을 그대로 files.info에 다시 넣으면
+    된다 — 메시지를 되짚어 찾는 과정이 필요 없다.
+    """
+    if material.connectionId is None or not material.providerFileId:
+        return None
+    connection = await slack_connection(str(material.ownerId), material.connectionId)
+    if connection is None:
+        return None
+    try:
+        return await fetch_file(
+            bot_token=access_token(connection), file_id=material.providerFileId
+        )
+    except Exception:
+        return None
+
+
+async def _fetch_material_live(material: ProjectMaterial, owner: User) -> bytes | None:
+    """S3에 원본이 없는 자료를 그 자리에서 받아온다. 화면이 눌렀을 때만 부른다.
+
+    동기화 단계는 목록만 만들고 원본을 미리 내려받지 않는다. S3가 설정되지
+    않은 환경에서는 저장 자체를 건너뛰므로 storageKey가 영영 비어 있다. 그래서
+    실제로 열어보는 이 시점이 첫 다운로드가 되고, 이 경로가 없는 채널은
+    원본에 접근할 방법이 사라진다. Gmail과 Slack 둘 다 여기를 지난다.
+    """
+    if material.sourceChannel == "GMAIL":
+        downloaded = await _fetch_gmail_material_live(material, owner)
+    elif material.sourceChannel == "SLACK":
+        downloaded = await _fetch_slack_material_live(material)
+    else:
+        return None
+    if downloaded is None:
+        return None
+
+    # Slack 자료는 동기화 시점에 종류·크기를 모른다. 목록 어댑터가 mimetype을
+    # isImage 불리언으로 뭉개고 버리기 때문이다. 원본을 손에 쥔 지금이 채울 수
+    # 있는 첫 자리다. 이미 값이 있으면 건드리지 않는다.
+    changed = False
+    if material.mimeType is None and downloaded.contentType:
+        material.mimeType = downloaded.contentType
+        changed = True
+    if material.sizeBytes is None:
+        material.sizeBytes = len(downloaded.content)
+        changed = True
     if has_s3():
         key = f"materials/{material.ownerId}/{material.projectId}/{material.id}/{downloaded.fileName}"
         stored_key = put_object(key, downloaded.content, downloaded.contentType)
         if stored_key is not None:
             material.storageKey = stored_key
-            material.updatedAt = _now()
-            await material.save()
+            changed = True
+    if changed:
+        material.updatedAt = _now()
+        await material.save()
     return downloaded.content
 
 
